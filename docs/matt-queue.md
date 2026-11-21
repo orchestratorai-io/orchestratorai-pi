@@ -23,4 +23,22 @@ Everything waiting on Matt in this project, **most important first**. Deadlines 
   - **Answer** (added when Answered).
 - **grokbot** reads this file (and the same file in Matt's other projects) to answer "what are my top issues?". It lists items that are Waiting or Asked.
 
-Nothing waiting on Matt right now.
+## 1. Install Xcode on the Mac Studio, or Pi cannot be rebuilt
+
+**Status:** Waiting
+
+**What:** The Mac Studio has only Apple's Command Line Tools, not Xcode. `./scripts/build-app.sh` now fails: one of the packages Pi depends on for rendering text uses a SwiftUI feature whose compiler plug-in ships inside Xcode and is absent from the Command Line Tools. Installing Xcode from the App Store and running `sudo xcode-select -s /Applications/Xcode.app` fixes it. It is roughly a 10 GB download and needs an admin password, which is why this is a question rather than something already done.
+
+**Why it matters:** The `dist/Pi.app` that the demos and the click-through verification use was built on 2026-10-04 and still launches, so nothing is broken today. But no change to Pi's Swift code can be shipped until the Studio can compile again — the new smoke test (`./scripts/smoke-test.sh`) can only check the old bundle, with `--skip-build`.
+
+**Options:**
+1. Install Xcode on the Studio. Unblocks building; costs a large download and disk space.
+2. Drop the `textual` dependency and render workflow output without it. No Xcode needed, but it changes how every result reads, and that is a product decision, not a build fix.
+3. Leave it. Pi is demo-only and nobody edits its Swift; revisit when someone needs to.
+
+**Recommendation:** Option 1. The Studio is the coding machine for every Apple-side project here, so it will need Xcode again regardless, and option 2 trades a one-time download for a permanent change to the output.
+
+**Reply:** "Install Xcode on the Studio" / "drop textual instead" / "leave it for now".
+
+**Answer:**
+
