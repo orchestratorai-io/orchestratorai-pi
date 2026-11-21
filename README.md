@@ -61,6 +61,35 @@ Every run is resumable from the store, without pi-agents support for it:
 - For the `jev_check` guard: Ollama ≥ 0.35 with `clef` pulled, `DECISION_BASE_URL` in `.env` (see `.env.example`), and `npm install` once in `.pi/extensions/orchestrator/`. See [docs/decisions.md](docs/decisions.md).
 - Project trust. Delegated agents are spawned without `--approve`, so the project must be trusted persistently: run `pi` here once and `/trust`, or click **Trust this project for Pi** in the app (both write `~/.pi/agent/trust.json`).
 
+## Smoke test (this Mac)
+
+```sh
+./scripts/smoke-test.sh                # build, then launch and check
+./scripts/smoke-test.sh --skip-build   # check the dist/Pi.app that is already there
+./scripts/smoke-test.sh --keep-running # leave Pi up at the end, to look at it
+```
+
+Twelve checks: that Package.swift, `Resources/Info.plist` and the linked
+binary name the same minimum macOS and that this Mac meets it; that
+`build-app.sh` produces a bundle with a valid `Info.plist` and an executable;
+and that the bundle launches, checks in with LaunchServices, puts a window of
+at least 960x700 on screen, stays up, writes no crash report, and quits when
+asked. It quits any Pi already running first, so a stale instance cannot make
+it pass.
+
+No privacy grants needed — it reads window geometry through
+`CGWindowListCopyWindowInfo` (`scripts/pi-window-check.swift`), not the
+accessibility tree, so it runs from an unattended handoff as well as from a
+terminal. It does not exercise the UI; that is
+[scripts/clickthrough/](scripts/clickthrough/README.md), which does need the
+calling terminal in System Settings → Privacy & Security → Accessibility.
+
+As of 2026-11-21 the build stage fails on the Mac Studio: only the Command Line
+Tools are installed, and SwiftUI's `@Entry` macro — reached through
+`textual` → `swiftui-math` — needs `libSwiftUIMacros.dylib`, which ships with
+Xcode. The script says so and names the fix rather than dumping the compiler's
+output. Until Xcode is installed, run it with `--skip-build`.
+
 ## Start Pi (terminal)
 
 ```sh
