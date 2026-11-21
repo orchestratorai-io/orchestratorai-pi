@@ -49,7 +49,7 @@ application, and the distance between the two is most of the work below.
 |---|---|
 | Build | `./scripts/build-app.sh` — `swift build -c release`, then a hand-assembled bundle |
 | Signing | None. Ad-hoc, unsigned, un-notarized; Gatekeeper will refuse it on any machine it was not built on |
-| Bundle | `CFBundleShortVersionString` 0.1.0, build 1, no icon, `LSMinimumSystemVersion` 13.0 |
+| Bundle | `CFBundleShortVersionString` 0.1.0, build 1, no icon, `LSMinimumSystemVersion` 15.0 (was 13.0, below the macOS 15 `Package.swift` builds for; corrected 2026-11-21) |
 | Where the content lives | Outside the app. The shell locates `.pi/settings.json` via `PI_PROJECT_PATH`, the working directory, or two levels up from the bundle — i.e. it expects to sit in `dist/` inside a checkout |
 | Runtime dependencies | The `pi` CLI on PATH (npm global), Node ≥ 22.5 for `node:sqlite`, pi-agents `0.21.0` fetched on first trusted run, Ollama ≥ 0.35 serving the chosen model and `clef`, `yaml` installed by `npm install` in `.pi/extensions/orchestrator/` |
 | Trust | The project must be trusted persistently (`~/.pi/agent/trust.json`), because delegated agents are spawned without `--approve` |
