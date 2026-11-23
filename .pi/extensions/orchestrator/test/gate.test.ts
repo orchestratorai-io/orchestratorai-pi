@@ -12,7 +12,7 @@ import * as path from "node:path";
 import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { RunStore, STORE_RELATIVE_PATH, type RunRow } from "../store.ts";
-import { attorneyGate, type GateResult } from "../gate.ts";
+import { attorneyGate, consoleAttached, gateRun, SKIPPED, type GateResult } from "../gate.ts";
 
 const OPTS = { pollMs: 10, maxWaitMs: 60_000, newId: randomUUID };
 const TITLE = "Cross-examination - answer as the witness";
@@ -234,6 +234,34 @@ test("a decision recorded just as the gate times out is used, not cancelled", as
     const result = await attorneyGate(db, run, { title: TITLE, summary: "Q?" }, undefined, { ...OPTS, maxWaitMs: -1 });
     assert.ok(raced, "the race was not staged");
     assert.equal(text(result), "DECISION: approved\nCOMMENT: just in time");
+  } finally {
+    cleanup();
+  }
+});
+
+// ---- Terminal runs: no 12-hour wait (resume fix, item 5)
+
+test("from a terminal Pi (no console attached) the gate is skipped instead of waiting 12 hours", async () => {
+  const { db, run, cleanup } = setup();
+  try {
+    db.markStarted(run.id, "pi-run-1");
+    assert.equal(gateRun(db, run.id, false), undefined, "a terminal Pi must not wait on the app's run");
+    assert.equal(consoleAttached({}), false);
+    assert.equal(consoleAttached({ ORCHESTRATORAI_CONSOLE: "1" }), true);
+    assert.match(SKIPPED.content[0].text, /^DECISION: skipped/);
+  } finally {
+    cleanup();
+  }
+});
+
+test("an empty or unknown run_id skips the gate rather than attaching to another running run", async () => {
+  const { db, run, cleanup } = setup();
+  try {
+    db.markStarted(run.id, "pi-run-1"); // someone else's run, live
+    assert.equal(gateRun(db, "", true), undefined);
+    assert.equal(gateRun(db, "no-such-run", true), undefined);
+    assert.equal(gateRun(db, run.id, true)?.id, run.id, "the app's own run, named by id, still waits");
+    assert.equal(gateRun(db, "pi-run-1", true)?.id, run.id, "a pi-agents run id resolves to its local run");
   } finally {
     cleanup();
   }

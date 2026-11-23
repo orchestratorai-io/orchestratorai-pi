@@ -30,6 +30,9 @@ final class PiRunner: ObservableObject {
     /// Until it has, a non-live store state means "the extension has not written yet",
     /// not "the run is over".
     private var activeRunWentLive = false
+    /// Whether the extension has answered the current `/orchestrator` launch command.
+    private var launchReplied = false
+    private var launchWatchdog: Task<Void, Never>?
     // Store change notification: SQLite in WAL mode appends to <db>-wal on every
     // commit, so watching that file (and the db, for checkpoints) with a
     // dispatch source wakes us on writes instead of polling. A slow fallback
@@ -82,7 +85,7 @@ final class PiRunner: ObservableObject {
     func refresh() {
         guard let store else { return }
         // Model experiments stay in the store (hidden, not deleted); only the buyer's lists skip them.
-        runs = store.runs().filter { !LegalWorkflowCatalog.isHiddenFromRunList($0.workflow) }
+        runs = store.runs().filter { !LegalWorkflowCatalog.isHiddenFromRunList($0) }
         var map: [String: [CheckpointRecord]] = [:]
         for run in runs { map[run.id] = store.checkpoints(runId: run.id) }
         checkpointsByRun = map
@@ -187,8 +190,10 @@ final class PiRunner: ObservableObject {
 
     /// Crash-resume: the extension rebuilds the remainder of the stored flow from the
     /// completed steps' values (and any attorney overrides) and starts it under the same run id.
-    func resume(run: RunRecord) {
-        launchPi(command: "resume", request: ["runId": run.id], runId: run.id, model: run.model ?? "qwen3.6:latest")
+    /// `model` is what the "Local model" box holds; see `ResumeModel.choose`.
+    func resume(run: RunRecord, model picked: String, fallbackModel: String) {
+        let model = ResumeModel.choose(picked: picked, runModel: run.model, fallback: fallbackModel)
+        launchPi(command: "resume", request: ["runId": run.id, "model": model], runId: run.id, model: model)
     }
 
     /// One Pi RPC process per launch; `/orchestrator <command> {json}` is the only thing sent.
@@ -207,6 +212,7 @@ final class PiRunner: ObservableObject {
 
         activeRunId = runId
         activeRunWentLive = false
+        launchReplied = false
         selectedRunId = runId
         isRunning = true
         status = "Starting Pi…"
@@ -263,6 +269,7 @@ final class PiRunner: ObservableObject {
             outputPipe = output
             send(["type": "prompt", "message": "/orchestrator \(command) \(jsonText)"])
             status = command == "resume" ? "Resuming workflow…" : "Launching workflow…"
+            armLaunchWatchdog(command: command, runId: runId)
         } catch {
             isRunning = false
             activeRunId = nil
@@ -272,24 +279,39 @@ final class PiRunner: ObservableObject {
         refresh()
     }
 
-    /// A run left "running" with no live Pi behind it (the app quit, a script ended) can only be
-    /// resumed, never finished on its own. Called on attach; uses a staleness heuristic because
-    /// runs launched by scripts are not this process's children.
-    func markOrphanedRuns() {
-        guard let store else { return }
-        let cutoff = Date().addingTimeInterval(-180)
-        for run in store.runs() where run.isLive && run.id != activeRunId {
-            let lastActivity = store.events(runId: run.id).last.flatMap { Self.parseISO($0.at) } ?? Self.parseISO(run.updatedAt)
-            if let lastActivity, lastActivity < cutoff {
-                store.markOrphaned(runId: run.id, message: "No live Pi process behind this run (found at launch). Resume to finish it.")
+    /// Give up on a launch the extension never answers (see `LaunchWatchdog`).
+    private func armLaunchWatchdog(command: String, runId: String) {
+        launchWatchdog?.cancel()
+        let started = Date()
+        launchWatchdog = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(LaunchWatchdog.timeout))
+            guard !Task.isCancelled, let self, self.activeRunId == runId else { return }
+            let live = self.store?.run(id: runId)?.isLive == true && self.activeRunWentLive
+            switch LaunchWatchdog.verdict(elapsed: Date().timeIntervalSince(started), replied: self.launchReplied, runWentLive: live, command: command) {
+            case .timedOut(let message):
+                self.errorMessage = message
+                self.status = "Could not launch"
+                self.finishActiveProcess()
+                self.activeRunId = nil
+                self.refresh()
+            case .keepWaiting, .done:
+                break
             }
         }
     }
 
-    private static func parseISO(_ value: String) -> Date? {
-        let f = ISO8601DateFormatter()
-        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return f.date(from: value) ?? ISO8601DateFormatter().date(from: value)
+    /// A run left "running" with no live Pi behind it (the app quit, a script ended) can only be
+    /// resumed, never finished on its own. Called on attach. Runs launched by scripts are not this
+    /// process's children, so this asks whether the Pi that owns the run is still alive.
+    func markOrphanedRuns() {
+        guard let store else { return }
+        let now = Date()
+        for run in store.runs() where run.isLive && run.id != activeRunId {
+            let lastEvent = store.events(runId: run.id).last.flatMap { RunLiveness.parseISO($0.at) }
+            if RunLiveness.isOrphaned(run: run, lastEventAt: lastEvent, now: now, pidAlive: RunLiveness.processAlive) {
+                store.markOrphaned(runId: run.id, message: "No live Pi process behind this run (found at launch). Resume to finish it.")
+            }
+        }
     }
 
     func stop() {
@@ -304,6 +326,8 @@ final class PiRunner: ObservableObject {
     }
 
     private func finishActiveProcess() {
+        launchWatchdog?.cancel()
+        launchWatchdog = nil
         outputPipe?.fileHandleForReading.readabilityHandler = nil
         if let process, process.isRunning {
             terminateDirectChildren(of: process.processIdentifier)
@@ -384,6 +408,11 @@ final class PiRunner: ObservableObject {
                   message["customType"] as? String == "orchestrator:reply",
                   let content = message["content"] as? String,
                   let reply = try? JSONSerialization.jsonObject(with: Data(content.utf8)) as? [String: Any] else { return }
+            if ["start", "resume"].contains(reply["op"] as? String ?? "") {
+                launchReplied = true
+                launchWatchdog?.cancel()
+                launchWatchdog = nil
+            }
             if reply["ok"] as? Bool == true {
                 status = reply["op"] as? String == "resume" ? "Workflow resumed" : "Workflow running"
                 if let warnings = reply["warnings"] as? [String], !warnings.isEmpty {
