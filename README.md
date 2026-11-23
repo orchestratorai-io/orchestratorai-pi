@@ -1,8 +1,17 @@
 # OrchestratorAI - Pi
 
-A local, Pi-native legal agent workspace.
+Pi is a free way to try the OrchestratorAI Legal workflows on your own Mac. It is
+part of OrchestratorAI Legal, not a separate product: fourteen of the Legal
+workflows, ported to run on a local model against documents on your own disk,
+each with its attorney review steps. The full Legal suite is available from
+OrchestratorAI. Contact: matt@orchestratorai.io.
 
-This project is intentionally not a second web platform. Pi supplies the interactive agent, built-in tools, sessions, model interface, and extension system; [pi-agents](https://github.com/mavam/pi-agents) supplies the workflow algebra. This repository supplies the legal operating context, skills, agent personas, saved workflows, and a thin native macOS shell.
+Where it stands, plainly: we are building it and getting ready to sell the
+Legal suite. No law firm has used Pi yet. Today it runs from this repository on
+a Mac that has Pi, Node and Ollama installed (see [Requirements](#requirements));
+there is no installer, no signed build and no store listing.
+
+Under the hood it is a local, Pi-native legal agent workspace, intentionally not a second web platform. Pi supplies the interactive agent, built-in tools, sessions, model interface, and extension system; [pi-agents](https://github.com/mavam/pi-agents) supplies the workflow algebra. This repository supplies the legal operating context, skills, agent personas, saved workflows, and a thin native macOS shell.
 
 ## How the pieces fit
 
@@ -84,11 +93,12 @@ terminal. It does not exercise the UI; that is
 [scripts/clickthrough/](scripts/clickthrough/README.md), which does need the
 calling terminal in System Settings → Privacy & Security → Accessibility.
 
-As of 2026-11-21 the build stage fails on the Mac Studio: only the Command Line
-Tools are installed, and SwiftUI's `@Entry` macro — reached through
-`textual` → `swiftui-math` — needs `libSwiftUIMacros.dylib`, which ships with
-Xcode. The script says so and names the fix rather than dumping the compiler's
-output. Until Xcode is installed, run it with `--skip-build`.
+The build stage needs Xcode, not just the Command Line Tools: SwiftUI's
+`@Entry` macro — reached through `textual` → `swiftui-math` — needs
+`libSwiftUIMacros.dylib`, which ships with Xcode. On a Mac without it the script
+says so and names the fix rather than dumping the compiler's output; run it with
+`--skip-build` there. Xcode has been installed on the Mac Studio since
+2026-11-23, so the full build works there.
 
 ## Start Pi (terminal)
 

@@ -3,7 +3,7 @@
 Orientation brief for Coding Manager handoffs and Claude Code (`claude -p`).
 
 ## Purpose
-Pi-native legal agent workspace (not a second web platform). Pi supplies interactive agent/tools/sessions; this repo supplies legal operating context, skills, personas, composed workflows, and a macOS Pi.app shell.
+Pi-native legal agent workspace (not a second web platform). Since 2026-11-23 Pi is described to users as the free "try it on your Mac" front door to OrchestratorAI Legal, not a separate product (see `docs/productize-plan.md`); keep any user-facing wording to that, with no customer, pilot or price claims. Pi supplies interactive agent/tools/sessions; this repo supplies legal operating context, skills, personas, composed workflows, and a macOS Pi.app shell.
 
 ## In scope
 - Project-local Pi settings, skills, personas, composed workflows (e.g. contract Red–Blue)

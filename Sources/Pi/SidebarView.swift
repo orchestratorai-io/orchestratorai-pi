@@ -50,6 +50,22 @@ struct SidebarView: View {
             }
         }
         .listStyle(.sidebar)
+        // Words only: what Pi is, said once where it is always on screen.
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            VStack(alignment: .leading, spacing: 4) {
+                Divider()
+                Text("Pi is free. It runs the OrchestratorAI Legal workflows on this Mac so you can try them.")
+                Text("Pi is part of OrchestratorAI Legal. The full suite is available from OrchestratorAI: matt@orchestratorai.io")
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .lineLimit(4)
+            .padding(.horizontal, 12)
+            .padding(.bottom, 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.bar)
+            .accessibilityIdentifier("sidebar.about")
+        }
         .navigationTitle("Workflows")
         // Wide enough for the longest catalog title plus its badge without
         // truncating; draggable between the min and max, because a person who

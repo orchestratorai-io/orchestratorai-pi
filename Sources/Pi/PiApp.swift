@@ -13,7 +13,7 @@ struct AttorneyReviewItem: Identifiable, Hashable {
 @main
 struct PiApp: App {
     var body: some Scene {
-        WindowGroup("OrchestratorAI - Pi") {
+        WindowGroup("Pi - OrchestratorAI Legal") {
             ContentView()
                 .frame(minWidth: 960, idealWidth: 1500, minHeight: 720, idealHeight: 1150)
         }
@@ -239,7 +239,7 @@ struct ContentView: View {
                 .font(.title2)
                 .foregroundStyle(.blue)
             VStack(alignment: .leading, spacing: 2) {
-                Text("OrchestratorAI - Pi")
+                Text("Pi - try OrchestratorAI Legal on your Mac")
                     .font(.title2.weight(.semibold))
                 Text(activeWorkflow?.title ?? "Workflows")
                     .font(.subheadline)
@@ -269,7 +269,7 @@ struct ContentView: View {
             VStack(alignment: .leading, spacing: 10) {
                 Label("Allow Pi to run workflows from this folder", systemImage: "lock.shield")
                     .font(.headline)
-                Text("Workflows use the legal agents, skills and attorney review steps stored in this folder. Pi needs your permission once before it will load them on this Mac. Until you allow it, no workflow can start.")
+                Text("Pi is a free way to try the OrchestratorAI Legal workflows on this Mac. They use the legal agents, skills and attorney review steps stored in this folder. Pi needs your permission once before it will load them. Until you allow it, no workflow can start.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                 Text(projectDirectory.path)

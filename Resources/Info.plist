@@ -20,6 +20,8 @@
 	<string>1</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>15.0</string>
+	<key>NSHumanReadableCopyright</key>
+	<string>A free way to try the OrchestratorAI Legal workflows on your own Mac. Part of OrchestratorAI Legal; the full suite is available from OrchestratorAI. Contact: matt@orchestratorai.io</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 </dict>

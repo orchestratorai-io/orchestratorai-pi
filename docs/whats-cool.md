@@ -1,16 +1,21 @@
 # What's cool about this app
 
+Pi is the free "try it on your Mac" front door to OrchestratorAI Legal. It is
+part of OrchestratorAI Legal, not a separate product, and the full suite is
+available from OrchestratorAI (matt@orchestratorai.io). Say it that way on
+camera, and end the video on it.
+
 Source notes for a demo video. Everything here was built and verified 2026-09-17 → 2026-09-19; the
 "receipts" sections point at the commits and store rows that back each claim.
 
 ## The pitch in one breath
 
-We rebuilt Orchestrator Legal — fourteen attorney workflows, every one with human-in-the-loop gates — as
-a native Mac app on top of an open-source coding agent and fourteen YAML files. Same workflows, same
-local models, no framework. Then we hit the wall every local-model team hits, and fixed it with a
-different *kind* of model: a typed decision-maker that enforces rules a language model won't. The
-judgment layer became a service the whole suite shares over our tailnet. And the last "cloud" piece is
-one config value away from coming home when an open System One model exists.
+Pi is a free way to try OrchestratorAI Legal on your own Mac. We ported fourteen of its attorney
+workflows, every one with human-in-the-loop gates, to a native Mac app on top of an open-source coding
+agent and fourteen YAML files. Same workflows, local models, no framework. Then we hit the wall every
+local-model team hits, and fixed it with a different *kind* of model: a typed decision-maker that
+enforces rules a language model won't. It runs on the same Mac as the workflows. When you want the full
+suite, it is available from OrchestratorAI.
 
 ## The story arc (use this as the video's spine)
 
@@ -140,6 +145,10 @@ reducer; token-level streaming is per-agent, not per-token in the UI. Neither ch
 
 ## Say the quiet parts (they're what make it credible)
 
+- **No customers yet.** We are building it and getting ready to sell it. No law firm has been
+  contacted, so there are no customers, pilots or users to mention. Don't imply any.
+- **Free means free to try, not a finished product.** Today Pi runs from the repository on a Mac with
+  Pi, Node and Ollama set up. There is no installer, signed build, price or store listing.
 - **Local, guard included.** The 14 workflows and the guard both run on the Studio's Ollama, so the
   text being judged (for deposition prep, generated text about a real witness) stays on the machine. If
   the guard moves to hosted Jev later, that stops being true; say so then.
@@ -157,7 +166,8 @@ reducer; token-level streaming is per-agent, not per-token in the UI. Neither ch
 ## Numbers worth saying out loud
 
 - 14 workflows, 63 personas, 8 fixture sets — all synthetic and labelled.
-- ~25 real runs in the store; 1,000+ journaled node events; every agent's intermediate output kept.
+- 64 runs in the store as of 2026-11-23, many of them our own test runs; 1,000+ journaled node
+  events; every agent's intermediate output kept.
 - witness-coaching rubric: v7, 7 labelled cases, 7/7 on `clef`; the 80B model's real output is one of
   the cases.
 - Clef: about 440 input tokens to block the coaching text, answered on the Studio with no per-call cost.

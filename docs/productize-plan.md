@@ -7,6 +7,20 @@ here has been shipped, and nothing here should be read as a commitment.
 Written 2026-09-28, alongside the click-through record in
 [verification/2026-09-28-clickthrough.md](verification/2026-09-28-clickthrough.md).
 
+## Decision, 2026-11-23: Pi is the free front door to OrchestratorAI Legal
+
+Matt decided (2026-11-23): for now, Pi is the free "try it on your Mac" front
+door to the OrchestratorAI Legal suite. It is **not a separate product**. The
+app, the README and these docs now say so: a free way to try the Legal
+workflows on your own Mac, part of OrchestratorAI Legal, with the full suite
+available from OrchestratorAI. Contact: matt@orchestratorai.io.
+
+What that rules out for now: a price for Pi, a store listing, an Apple catalog
+build, and any customer, pilot or usage claim. No law firm has been contacted
+yet. The packaging options below are still the way a stranger would get Pi
+running; the decision changes what Pi is called and sold as, not how it is
+built.
+
 The work this plan describes is tracked as an effort, with the parts it does not
 cover (wrapping Pi so there is no command line, a writable project home, an
 admin workflow builder, front ends on top):
@@ -152,7 +166,9 @@ first thing in the way.
 ## Where Pi sits in the OrchestratorAI offering
 
 The offering already has a legal appliance: **orchestratorai-local**, the full
-web platform. Pi is not a second one, and should not be sold as one.
+web platform. Pi is not a second one, and should not be sold as one. As decided
+on 2026-11-23, Pi is the free way to try the Legal workflows on your own Mac,
+and the full suite comes from OrchestratorAI.
 
 | | orchestratorai-local | Pi |
 |---|---|---|
@@ -170,28 +186,32 @@ committing to an appliance.
 
 Three honest roles, in the order they are worth doing:
 
-1. **Evaluation and demonstration.** The thing you put in front of someone.
-   Fourteen workflows, synthetic fixtures, no deployment, no data leaving the
-   room. This is the role it already fills and the only one it fills today.
-2. **A local tier of the legal offering.** For work that must not leave the
+1. **The free front door (decided 2026-11-23).** The thing you put in front of
+   someone: try the Legal workflows on your own Mac. Fourteen workflows,
+   synthetic fixtures, no deployment, no data leaving the room. This is the
+   role it already fills and the only one it fills today.
+2. **Later, maybe: a local tier of the legal offering.** For work that must not leave the
    device. Requires (2) and (4) above, and a support answer for models.
-3. **The reference implementation of the workflow catalog.** The
+3. **Later, maybe: the reference implementation of the workflow catalog.** The
    `.pi/workflows/*.yaml` files are the asset — flow and launch UI in one file,
    consumable by any front end reading the same store. If the Apple lab or a
    web view later renders them, they read this store, not a new one.
 
-What Pi is **not**, and should not be positioned as: a replacement for the
-appliance; a multi-user system; a hosted service; a compliance control. The
+What Pi is **not**, and should not be positioned as: a separate product; a
+replacement for the full suite; a multi-user system; a hosted service; a
+compliance control. The
 `jev_check` guard is a calibrated classifier on one step, not a compliance guarantee.
 
 ## Draft public wording
 
-Draft. No traction, customer, usage or performance claims, because there are
-none to make. Everything below is a description of what the software does.
+Draft, reworded 2026-11-23 for the front-door decision. No traction, customer,
+pilot, usage or performance claims, because there are none to make. No price.
+Everything below is a description of what the software does.
 
-> **OrchestratorAI Pi — legal workflows that run on your machine.**
+> **Try OrchestratorAI Legal on your Mac, free.**
 >
-> Pi is a local legal agent workspace for macOS. Fourteen composed workflows —
+> Pi is a free way to try the OrchestratorAI Legal workflows on your own Mac.
+> Fourteen composed workflows —
 > contract review, due diligence, discovery review, deposition preparation,
 > compliance audit and more — run against documents on your own disk, using a
 > language model served locally. Documents are read by a local process and are
@@ -204,13 +224,14 @@ none to make. Everything below is a description of what the software does.
 > output, the model used — so the work can be inspected after the fact, and a
 > run interrupted part-way can be resumed from where it stopped.
 >
-> Pi is part of the OrchestratorAI legal offering, alongside the
-> OrchestratorAI Local appliance for firm-wide deployment.
+> Pi is part of OrchestratorAI Legal. The full suite is available from
+> OrchestratorAI: matt@orchestratorai.io.
 
 Shorter form:
 
-> Fourteen legal workflows, a local model, and an attorney checkpoint in the
-> middle of each one. Your documents stay on your machine.
+> Try OrchestratorAI Legal free on your Mac: fourteen legal workflows, a local
+> model, and an attorney checkpoint in each one. Your documents stay on your
+> machine. The full suite is available from OrchestratorAI.
 
 ### Claims, and what backs each one
 
@@ -218,6 +239,8 @@ Nothing in the wording above should ship without the line next to it.
 
 | Claim | What backs it |
 |---|---|
+| "free" | Nothing is charged for Pi and it has no price. **Caveat:** today it needs the repository and a Mac set up with Pi, Node and Ollama; do not imply a one-click download until packaging option 2 exists |
+| "part of OrchestratorAI Legal" / "the full suite is available from OrchestratorAI" | Matt's decision of 2026-11-23; the workflows are ports of orchestratorai-local's Legal workflows |
 | "Fourteen composed workflows" | `.pi/workflows/*.yaml`; each is Ready in the app; see the click-through record |
 | "run against documents on your own disk" | The launch card takes a file or folder path; the Pi process reads it directly |
 | "not uploaded" | True of the workflows and of the `jev_check` guard, which runs on Clef in the local Ollama. **Caveat:** stop using this sentence if `DECISION_BASE_URL` is pointed at a hosted endpoint |
@@ -229,13 +252,14 @@ Nothing in the wording above should ship without the line next to it.
 ### Words to avoid
 
 "Secure", "compliant", "private by design", "trusted by", "used by", "saves N
-hours", "accurate". The first three are claims about a system nobody has audited;
+hours", "accurate", "pilot", "customers", "law firms use", or any price. The first three are claims about a system nobody has audited;
 the rest are claims about a product nobody has used. None of them are needed —
 "your documents stay on your machine" is both stronger and true.
 
 ## What this plan does not cover
 
-- Pricing and licensing.
+- Pricing and licensing of the full suite. (Pi itself is free, per the
+  2026-11-23 decision.)
 - The Apple catalog build, which is explicitly out of scope here.
 - Any change to orchestratorai.io or orchestratorai-offering.
 - A security review of the app or the extension. One should happen before
