@@ -65,6 +65,9 @@ enum PiEnvironment {
         return out
     }
 
+    /// Same name as `CONSOLE_ENV` in `.pi/extensions/orchestrator/gate.ts`.
+    static let consoleEnvironmentKey = "ORCHESTRATORAI_CONSOLE"
+
     static func processEnvironment(piExecutable: String, projectDirectory: URL? = nil) -> [String: String] {
         var env = ProcessInfo.processInfo.environment
         if let projectDirectory {
@@ -80,6 +83,10 @@ enum PiEnvironment {
         let existing = (env["PATH"] ?? "/usr/bin:/bin").split(separator: ":").map(String.init)
         var seen = Set<String>()
         env["PATH"] = (entries + existing).filter { seen.insert($0).inserted }.joined(separator: ":")
+        // Tells the extension (and the delegated agents, which inherit it) that this app is
+        // watching, so an attorney gate waits for a decision here. A terminal Pi lacks it and
+        // skips the gate instead of waiting 12 hours for a console nobody has open.
+        env[consoleEnvironmentKey] = "1"
         return env
     }
 

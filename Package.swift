@@ -22,6 +22,12 @@ let package = Package(
             ],
             path: "Sources/Pi",
             linkerSettings: [.linkedLibrary("sqlite3")]
+        ),
+        // Unit tests for the app's run logic (no UI, no Pi): `swift test`.
+        .testTarget(
+            name: "PiTests",
+            dependencies: ["Pi"],
+            path: "Tests/PiTests"
         )
     ]
 )

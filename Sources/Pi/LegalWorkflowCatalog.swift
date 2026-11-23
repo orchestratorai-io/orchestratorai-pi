@@ -89,6 +89,17 @@ enum LegalWorkflowCatalog {
         hiddenFromRunList.contains(workflowId)
     }
 
+    /// Also hides the "inline … (resumed)" rows an older extension created by mistake on
+    /// every resume (the resume itself was journalled on the original run). They stay in the
+    /// store, hidden, not deleted. The extension no longer creates them.
+    static func isHiddenFromRunList(_ run: RunRecord) -> Bool {
+        isHiddenFromRunList(run.workflow) || isResumeArtifact(run)
+    }
+
+    static func isResumeArtifact(_ run: RunRecord) -> Bool {
+        run.workflow == "inline" && run.title.hasSuffix(" (resumed)")
+    }
+
     static func workflows(projectDirectory: URL) -> [WorkflowDefinition] {
         let workflowsDir = projectDirectory.appendingPathComponent(".pi/workflows")
         var definitions = seed.map { entry -> WorkflowDefinition in

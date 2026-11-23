@@ -45,6 +45,10 @@ export interface RunRow {
   display: string | null;
   resume_offset: number;
   resumes: number;
+  /** Process id of the Pi that drives this run right now; null when none has claimed it. */
+  owner_pid: number | null;
+  /** Last time that Pi said it is still alive (every HEARTBEAT_MS while it owns the run). */
+  heartbeat_at: string | null;
   created_at: string;
   started_at: string | null;
   completed_at: string | null;
@@ -184,6 +188,8 @@ const MIGRATIONS: Array<{ table: string; column: string; ddl: string }> = [
   { table: "runs", column: "resumes", ddl: "ALTER TABLE runs ADD COLUMN resumes INTEGER NOT NULL DEFAULT 0" },
   { table: "run_events", column: "value_json", ddl: "ALTER TABLE run_events ADD COLUMN value_json TEXT" },
   { table: "run_events", column: "step_index", ddl: "ALTER TABLE run_events ADD COLUMN step_index INTEGER" },
+  { table: "runs", column: "owner_pid", ddl: "ALTER TABLE runs ADD COLUMN owner_pid INTEGER" },
+  { table: "runs", column: "heartbeat_at", ddl: "ALTER TABLE runs ADD COLUMN heartbeat_at TEXT" },
 ];
 
 function nowIso(at?: number): string {
@@ -214,7 +220,13 @@ export class RunStore {
     this.db.exec(SCHEMA);
     for (const m of MIGRATIONS) {
       const cols = this.db.prepare(`PRAGMA table_info(${m.table})`).all() as Array<{ name: string }>;
-      if (!cols.some((c) => c.name === m.column)) this.db.exec(m.ddl);
+      if (cols.some((c) => c.name === m.column)) continue;
+      try {
+        this.db.exec(m.ddl);
+      } catch (error) {
+        // The app (RunStore.swift) or another Pi may have added it in the meantime.
+        if (!/duplicate column/i.test(String(error))) throw error;
+      }
     }
   }
 
@@ -231,12 +243,14 @@ export class RunStore {
     sourceDocument?: string;
     params: Record<string, string>;
     model?: string;
+    /** The Pi process creating the run, which will drive it. */
+    ownerPid?: number;
   }): RunRow {
     const at = nowIso();
     this.db
       .prepare(
-        `INSERT INTO runs (id, workflow, title, source_document, params_json, model, status, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?)`,
+        `INSERT INTO runs (id, workflow, title, source_document, params_json, model, status, owner_pid, heartbeat_at, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?)`,
       )
       .run(
         input.id,
@@ -245,6 +259,8 @@ export class RunStore {
         input.sourceDocument ?? null,
         JSON.stringify(input.params),
         input.model ?? null,
+        input.ownerPid ?? null,
+        input.ownerPid === undefined ? null : at,
         at,
         at,
       );
@@ -271,13 +287,33 @@ export class RunStore {
       .get() as RunRow | undefined;
   }
 
-  markStarted(id: string, piRunId: string): void {
+  markStarted(id: string, piRunId: string, ownerPid?: number): void {
     const at = nowIso();
     this.db
       .prepare(
-        "UPDATE runs SET pi_run_id = ?, status = 'running', started_at = COALESCE(started_at, ?), updated_at = ? WHERE id = ?",
+        `UPDATE runs SET pi_run_id = ?, status = 'running', started_at = COALESCE(started_at, ?), updated_at = ?,
+           owner_pid = COALESCE(?, owner_pid), heartbeat_at = ? WHERE id = ?`,
       )
-      .run(piRunId, at, at, id);
+      .run(piRunId, at, at, ownerPid ?? null, at, id);
+  }
+
+  /** The owning Pi is still alive: refresh the heartbeat of the runs it drives. */
+  heartbeat(ids: string[], ownerPid: number): void {
+    const at = nowIso();
+    // Keyed on the owner, not the status: a row can read `stopped` (an older app's sweep)
+    // while this Pi still drives it, and resume must keep seeing that Pi as alive.
+    const stmt = this.db.prepare("UPDATE runs SET heartbeat_at = ? WHERE id = ? AND owner_pid = ?");
+    for (const id of ids) stmt.run(at, id, ownerPid);
+  }
+
+  /** The owning Pi is shutting down: its runs no longer have a live process behind them. */
+  releaseOwnedRuns(ownerPid: number): void {
+    this.db.prepare("UPDATE runs SET heartbeat_at = NULL WHERE owner_pid = ?").run(ownerPid);
+  }
+
+  /** Record the model a resume runs on (the one the attorney picked in the app). */
+  setModel(id: string, model: string): void {
+    this.db.prepare("UPDATE runs SET model = ?, updated_at = ? WHERE id = ?").run(model, nowIso(), id);
   }
 
   markFinished(
@@ -295,7 +331,7 @@ export class RunStore {
     this.db
       .prepare(
         `UPDATE runs SET status = ?, error = ?, result_markdown = ?, result_json = ?, agents = ?,
-           completed_at = ?, updated_at = ? WHERE id = ?`,
+           completed_at = ?, updated_at = ?, heartbeat_at = NULL WHERE id = ?`,
       )
       .run(
         input.status,
@@ -333,13 +369,14 @@ export class RunStore {
     return new Map(rows.map((r) => [r.step_index, JSON.parse(r.value_json)]));
   }
 
-  markResumed(id: string, piRunId: string, resumeOffset: number): void {
+  markResumed(id: string, piRunId: string, resumeOffset: number, ownerPid?: number): void {
     const at = nowIso();
     this.db
       .prepare(
-        "UPDATE runs SET pi_run_id = ?, status = 'running', error = NULL, completed_at = NULL, resume_offset = ?, resumes = resumes + 1, updated_at = ? WHERE id = ?",
+        `UPDATE runs SET pi_run_id = ?, status = 'running', error = NULL, completed_at = NULL, resume_offset = ?, resumes = resumes + 1,
+           updated_at = ?, owner_pid = COALESCE(?, owner_pid), heartbeat_at = ? WHERE id = ?`,
       )
-      .run(piRunId, resumeOffset, at, id);
+      .run(piRunId, resumeOffset, at, ownerPid ?? null, at, id);
   }
 
   // ------------------------------------------------------------- progress
