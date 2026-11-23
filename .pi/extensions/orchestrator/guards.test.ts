@@ -71,8 +71,8 @@ test("claims are capped, most specific kept, document order preserved", () => {
 });
 
 test("checklist findings parse every severity spelling", () => {
-  const f = extractFindings("- [ ] HIGH — a; b\n- [ ] **MEDIUM** - c\n* [x] CRITICAL: d\n- [ ] [LOW] – e\n- not a finding");
-  assert.deepEqual(f.map((x) => x.severity), ["HIGH", "MEDIUM", "HIGH", "LOW"]);
+  const f = extractFindings("- [ ] HIGH — a; b\n- [ ] **MEDIUM** - c\n* [x] CRITICAL: d\n- [ ] [LOW] – e\n- [ ] MEDIUM Verify the term\n- not a finding\n- [ ] HIGHLY unusual note");
+  assert.deepEqual(f.map((x) => x.severity), ["HIGH", "MEDIUM", "HIGH", "LOW", "MEDIUM"]);
   assert.equal(f[0].text, "a; b");
 });
 

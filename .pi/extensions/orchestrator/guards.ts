@@ -162,7 +162,7 @@ export function extractClaims(md: string, max = 10): string[] {
       ? raw.split("|").map((c) => plain(c)).filter(Boolean).join("; ")
       : plain(raw);
     // A checklist item's own severity label is the report's judgment, not a statement about the record.
-    const body = line.replace(/^\[?(CRITICAL|HIGH|MEDIUM|LOW)\]?\s*[—–:\-]+\s*/, "");
+    const body = line.replace(/^\[?(CRITICAL|HIGH|MEDIUM|LOW)\]?(?:\s*[—–:\-]+\s*|\s+)/, "");
     for (const s of splitSentences(body)) {
       const t = s.trim();
       if (t.length < 30 || t.length > 500) continue;
@@ -240,7 +240,8 @@ const SEV_RANK: Record<Severity, number> = { LOW: 0, MEDIUM: 1, HIGH: 2 };
 export function extractFindings(md: string): Array<{ severity: Severity; text: string }> {
   const out: Array<{ severity: Severity; text: string }> = [];
   for (const line of md.split("\n")) {
-    const m = /^\s*[-*]\s*\[[ xX]?\]\s*\**\s*\[?(CRITICAL|HIGH|MEDIUM|LOW)\]?\s*\**\s*[—–:\-]+\s*(.+)$/.exec(line);
+    // The separator after the severity is optional: local models write "- [ ] MEDIUM Verify ..." too.
+    const m = /^\s*[-*]\s*\[[ xX]?\]\s*\**\s*\[?(CRITICAL|HIGH|MEDIUM|LOW)\]?\s*\**(?:\s*[—–:\-]+\s*|\s+)(.+)$/.exec(line);
     if (m) out.push({ severity: (m[1] === "CRITICAL" ? "HIGH" : m[1]) as Severity, text: plain(m[2]) });
   }
   return out;
