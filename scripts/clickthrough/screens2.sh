@@ -13,12 +13,20 @@ say "inbox rows: $($D ids | grep -cE '^runs\.row\.[^.]+	')"
 chk "inbox search" runs.search
 say "new-run button correctly absent on Inbox: $([ "$($D exists runs.new_run)" = NO ] && echo PASS || echo FAIL)"
 
-say "--- coming-soon toggle ---"
-B=$($D ids | grep -cE '^sidebar\.workflow\.')
-$D click sidebar.show_coming_soon >/dev/null; sleep 2
-A=$($D ids | grep -cE '^sidebar\.workflow\.')
-say "catalog rows off=$B on=$A (all 14 are Ready, so equal is correct): $([ "$A" -ge "$B" ] && echo PASS || echo FAIL)"
-$D click sidebar.show_coming_soon >/dev/null; sleep 1
+say "--- catalog and hidden model test runs ---"
+B=$($D ids | grep -cE '^sidebar\.workflow\.[^.]+	')
+say "catalog rows=$B (all 14 legal workflows): $([ "$B" -eq 14 ] && echo PASS || echo FAIL)"
+say "coming-soon switch absent: $([ "$($D exists sidebar.show_coming_soon)" = NO ] && echo PASS || echo FAIL)"
+$D click sidebar.inbox >/dev/null; sleep 2
+# Look the probe runs up by workflow in the store: run ids are not always prefixed
+# with the workflow name, so matching on the row id alone could miss one.
+DB=/Users/golfergeek/projects/orchestratorai/orchestratorai-pi/data/orchestrator.sqlite
+IDS=$($D ids | cut -f1)
+P=0; N=0
+for id in $(sqlite3 "$DB" "select id from runs where workflow in ('prep-probe-qwen36','prep-probe-qwen38','prep-probe-coder');"); do
+  N=$((N+1)); grep -qxF "runs.row.$id" <<<"$IDS" && P=$((P+1))
+done
+say "model test runs in store=$N, shown in inbox=$P: $([ "$P" -eq 0 ] && echo PASS || echo FAIL)"
 
 say "--- search box filters the runs column ---"
 $D click sidebar.inbox >/dev/null; sleep 2

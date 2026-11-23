@@ -81,7 +81,8 @@ final class PiRunner: ObservableObject {
 
     func refresh() {
         guard let store else { return }
-        runs = store.runs()
+        // Model experiments stay in the store (hidden, not deleted); only the buyer's lists skip them.
+        runs = store.runs().filter { !LegalWorkflowCatalog.isHiddenFromRunList($0.workflow) }
         var map: [String: [CheckpointRecord]] = [:]
         for run in runs { map[run.id] = store.checkpoints(runId: run.id) }
         checkpointsByRun = map

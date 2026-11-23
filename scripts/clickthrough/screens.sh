@@ -14,7 +14,7 @@ for w in document-onboarding contract-review due-diligence deal-memo adversarial
   chk "catalog row $w" sidebar.workflow.$w
 done
 chk "inbox row" sidebar.inbox
-chk "show-coming-soon toggle" sidebar.show_coming_soon
+say "show-coming-soon switch correctly absent: $([ "$($D exists sidebar.show_coming_soon)" = NO ] && echo PASS || echo FAIL)"
 
 say "--- inbox screen ---"
 $D click sidebar.inbox >/dev/null; sleep 2

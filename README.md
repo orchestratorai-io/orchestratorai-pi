@@ -59,7 +59,7 @@ Every run is resumable from the store, without pi-agents support for it:
 - pi-agents is declared in `.pi/settings.json` (`npm:pi-agents@0.21.0`); Pi installs it on first trusted run.
 - Ollama with the model named in the app's "Local model" field (default `qwen3.6:latest`). See [docs/local-models.md](docs/local-models.md).
 - For the `jev_check` guard: Ollama ≥ 0.35 with `clef` pulled, `DECISION_BASE_URL` in `.env` (see `.env.example`), and `npm install` once in `.pi/extensions/orchestrator/`. See [docs/decisions.md](docs/decisions.md).
-- Project trust. Delegated agents are spawned without `--approve`, so the project must be trusted persistently: run `pi` here once and `/trust`, or click **Trust this project for Pi** in the app (both write `~/.pi/agent/trust.json`).
+- Project trust. Delegated agents are spawned without `--approve`, so the project must be trusted persistently: run `pi` here once and `/trust`, or click **Allow Pi to use this folder** in the app (both write `~/.pi/agent/trust.json`).
 
 ## Smoke test (this Mac)
 
@@ -101,7 +101,7 @@ Saved workflows register as slash commands: `/contract-review fixtures/example-n
 ## Demo (macOS app)
 
 1. `./scripts/build-app.sh && open dist/Pi.app` (set `PI_PROJECT_PATH` to this repo if the app cannot find `.pi/settings.json`).
-2. If prompted, click **Trust this project for Pi**.
+2. If prompted, click **Allow Pi to use this folder**.
 3. **Document Onboarding** → demo sample **Incomplete services draft** → Start → work **Attorney intake focus** → Approve / Request changes.
 4. **Contract Review** → demo sample **Mutual NDA** → Our side **Receiving party** → Start. After Red/Blue + arbitration, the **Workflow paused** card appears: read the arbitration, add direction, **Approve and continue** (or request changes). The summary step receives your note. Then work **Attorney review focus** and record the final decision.
 

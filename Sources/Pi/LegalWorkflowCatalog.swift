@@ -76,6 +76,19 @@ enum LegalWorkflowCatalog {
          "Ask questions against the firm knowledge base.", "research-knowledge"),
     ]
 
+    /// Workflows whose runs are kept out of every run list a buyer sees. These are the
+    /// per-model prep probes (`.pi/workflows/prep-probe-*.yaml`): engineering experiments
+    /// comparing local models, not product workflows. Their runs and YAML stay on disk.
+    static let hiddenFromRunList: Set<String> = [
+        "prep-probe-qwen36",
+        "prep-probe-qwen38",
+        "prep-probe-coder",
+    ]
+
+    static func isHiddenFromRunList(_ workflowId: String) -> Bool {
+        hiddenFromRunList.contains(workflowId)
+    }
+
     static func workflows(projectDirectory: URL) -> [WorkflowDefinition] {
         let workflowsDir = projectDirectory.appendingPathComponent(".pi/workflows")
         var definitions = seed.map { entry -> WorkflowDefinition in

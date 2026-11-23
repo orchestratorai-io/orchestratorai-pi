@@ -267,15 +267,15 @@ struct ContentView: View {
     private var trustCard: some View {
         GroupBox {
             VStack(alignment: .leading, spacing: 10) {
-                Label("Pi has not trusted this project yet", systemImage: "lock.shield")
+                Label("Allow Pi to run workflows from this folder", systemImage: "lock.shield")
                     .font(.headline)
-                Text("Delegated agents are spawned by Pi without the app's approval flag, so the project must be trusted in ~/.pi/agent/trust.json before workflow agents can load project profiles, skills, and the attorney gate. This is the same decision `/trust` records in the Pi terminal.")
+                Text("Workflows use the legal agents, skills and attorney review steps stored in this folder. Pi needs your permission once before it will load them on this Mac. Until you allow it, no workflow can start.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                 Text(projectDirectory.path)
                     .font(.caption.monospaced())
                     .foregroundStyle(.tertiary)
-                Button("Trust this project for Pi") {
+                Button("Allow Pi to use this folder") {
                     do {
                         try PiEnvironment.trustProject(projectDirectory)
                         projectTrusted = true

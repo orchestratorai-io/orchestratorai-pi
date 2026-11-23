@@ -19,15 +19,14 @@ struct SidebarView: View {
     let workflows: [WorkflowDefinition]
     @Binding var selection: SidebarSelection?
     @Binding var expandedGroups: Set<String>
-    @AppStorage("showComingSoon") private var showComingSoon = false
 
     private var inboxCount: Int {
         runner.attentionRuns.count
     }
 
-    private var visibleWorkflows: [WorkflowDefinition] {
-        showComingSoon ? workflows : workflows.filter { $0.status == .ready }
-    }
+    // Every catalog entry is listed. The old "Show coming soon" switch is gone: all 14
+    // Legal workflows ship a YAML, so it never changed what the list showed.
+    private var visibleWorkflows: [WorkflowDefinition] { workflows }
 
     var body: some View {
         // The List must be the column root so it receives the toolbar/title inset;
@@ -51,20 +50,6 @@ struct SidebarView: View {
             }
         }
         .listStyle(.sidebar)
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            VStack(spacing: 0) {
-                Divider()
-                Toggle("Show coming soon", isOn: $showComingSoon)
-                    .toggleStyle(.switch)
-                    .controlSize(.mini)
-                    .font(.caption)
-                    .accessibilityIdentifier("sidebar.show_coming_soon")
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .background(.bar)
-        }
         .navigationTitle("Workflows")
         // Wide enough for the longest catalog title plus its badge without
         // truncating; draggable between the min and max, because a person who
