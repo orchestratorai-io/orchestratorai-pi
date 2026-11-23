@@ -167,3 +167,21 @@ test("after a resume, a gate left pending for a different question is cancelled,
     cleanup();
   }
 });
+
+test("after a resume, a decision made while Pi was down is used, not asked again", async () => {
+  const { db, run, app, cleanup } = setup();
+  try {
+    const params = { title: TITLE, summary: "**Q:** Turn 2?" };
+    const abort = new AbortController();
+    const first = attorneyGate(db, run, params, abort.signal, OPTS);
+    assert.equal(await settle(first), "still waiting");
+    abort.abort();
+    await assert.rejects(first, /interrupted/);
+    decidePending(app, run.id, "approved", "decided while down"); // no step has received it yet
+    db.appendEvent({ runId: run.id, type: "resume", summary: "Resuming from step 2" });
+    const resumed = await settle(attorneyGate(db, run, params, undefined, OPTS));
+    assert.match(text(resumed), /DECISION: approved\nCOMMENT: decided while down$/);
+  } finally {
+    cleanup();
+  }
+});

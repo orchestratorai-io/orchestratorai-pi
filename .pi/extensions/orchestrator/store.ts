@@ -475,16 +475,14 @@ export class RunStore {
       .get(runId, title, summary) as CheckpointRow | undefined;
   }
 
-  /** Whether an already-decided gate may be handed out again, which is only
-   * right when the same step asks twice (an agent retrying the tool). It may
-   * not be once the run has resumed since the gate was asked, or once any step
-   * has completed after the decision was first handed out: by then the asker
-   * has moved on and a new call is a new turn that needs its own decision. */
+  /** Whether an already-decided gate may be handed out again. Yes if no step
+   * has received the decision yet (the attorney decided while Pi was down).
+   * Once it has been handed out, only the same step may get it again (an agent
+   * retrying the tool): not after any step has completed or the run has been
+   * resumed since, because by then a new call is a new turn that needs its own
+   * decision. Ordered by event seq, since the app writes decided_at in a
+   * different timestamp format. */
   gateDecisionReusable(checkpoint: CheckpointRow): boolean {
-    const resumed = this.db
-      .prepare("SELECT 1 FROM run_events WHERE run_id = ? AND type = 'resume' AND at >= ? LIMIT 1")
-      .get(checkpoint.run_id, checkpoint.requested_at);
-    if (resumed) return false;
     const delivered = this.db
       .prepare(
         `SELECT MIN(seq) AS seq FROM run_events
@@ -493,7 +491,7 @@ export class RunStore {
       .get(checkpoint.run_id, `%${checkpoint.id}%`) as { seq: number | null } | undefined;
     if (delivered?.seq == null) return true; // decided, but no step has received it yet
     const movedOn = this.db
-      .prepare("SELECT 1 FROM run_events WHERE run_id = ? AND type = 'node_completed' AND seq > ? LIMIT 1")
+      .prepare("SELECT 1 FROM run_events WHERE run_id = ? AND type IN ('node_completed', 'resume') AND seq > ? LIMIT 1")
       .get(checkpoint.run_id, delivered.seq);
     return !movedOn;
   }
