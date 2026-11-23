@@ -18,6 +18,10 @@ struct RunRecord: Identifiable, Hashable {
     let resultMarkdown: String?
     let agents: Int?
     let resumes: Int
+    /// Process id of the Pi driving the run (nil for rows from before it was recorded).
+    var ownerPid: Int32? = nil
+    /// Refreshed by that Pi every 30 s while it lives; cleared when it shuts down.
+    var heartbeatAt: String? = nil
     let createdAt: String
     let startedAt: String?
     let completedAt: String?
@@ -162,6 +166,10 @@ final class RunStore {
         exec("PRAGMA journal_mode = WAL;")
         exec("PRAGMA busy_timeout = 5000;")
         exec(Self.schema)
+        // Columns newer than the file may be: added here too, so the app can read liveness
+        // before Pi has opened an older store. Fails harmlessly when the column exists.
+        exec("ALTER TABLE runs ADD COLUMN owner_pid INTEGER;")
+        exec("ALTER TABLE runs ADD COLUMN heartbeat_at TEXT;")
     }
 
     deinit {
@@ -175,7 +183,8 @@ final class RunStore {
       params_json TEXT NOT NULL, model TEXT, pi_run_id TEXT, status TEXT NOT NULL, error TEXT,
       result_markdown TEXT, result_json TEXT, agents INTEGER, created_at TEXT NOT NULL,
       started_at TEXT, completed_at TEXT, updated_at TEXT NOT NULL,
-      flow_json TEXT, display TEXT, resume_offset INTEGER NOT NULL DEFAULT 0, resumes INTEGER NOT NULL DEFAULT 0
+      flow_json TEXT, display TEXT, resume_offset INTEGER NOT NULL DEFAULT 0, resumes INTEGER NOT NULL DEFAULT 0,
+      owner_pid INTEGER, heartbeat_at TEXT
     );
     CREATE INDEX IF NOT EXISTS runs_pi_run_id ON runs(pi_run_id);
     CREATE INDEX IF NOT EXISTS runs_created_at ON runs(created_at);
@@ -496,6 +505,8 @@ final class RunStore {
             resultMarkdown: text(stmt, named: "result_markdown"),
             agents: int(stmt, named: "agents"),
             resumes: int(stmt, named: "resumes") ?? 0,
+            ownerPid: int(stmt, named: "owner_pid").map { Int32(truncatingIfNeeded: $0) },
+            heartbeatAt: text(stmt, named: "heartbeat_at"),
             createdAt: text(stmt, named: "created_at") ?? "",
             startedAt: text(stmt, named: "started_at"),
             completedAt: text(stmt, named: "completed_at"),

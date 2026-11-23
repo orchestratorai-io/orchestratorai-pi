@@ -39,7 +39,7 @@ Three design rules:
 
 Two checkpoint kinds, both rows in the `checkpoints` table:
 
-- **Gate** (mid-flow). A workflow step uses the `attorney-gate` persona, whose only tool is `attorney_review`. The tool writes a pending checkpoint and blocks until the attorney approves or requests changes in the app; the decision and note are returned to the workflow verbatim and can steer later steps (contract-review feeds them into summary generation). From the Pi TUI, with no console attached, the gate is skipped automatically.
+- **Gate** (mid-flow). A workflow step uses the `attorney-gate` persona, whose only tool is `attorney_review`. The tool writes a pending checkpoint and blocks until the attorney approves or requests changes in the app; the decision and note are returned to the workflow verbatim and can steer later steps (contract-review feeds them into summary generation). From the Pi TUI, with no console attached, the gate is skipped automatically (and journalled as `gate_skipped`): the app marks the Pi it launches with `ORCHESTRATORAI_CONSOLE=1`, which delegated agents inherit, and only then does the gate wait (up to 12 hours). That includes `/orchestrator resume` typed in a terminal. To drive gates from a terminal while the app is open to decide them, export `ORCHESTRATORAI_CONSOLE=1` before starting `pi`. A gate also needs the run id from its task; it no longer attaches to whichever run is newest.
 - **Final review** (post-run). Created by the extension when a run completes. The app shows the report and the parsed "Attorney review focus" checklist, and records Approve / Request changes.
 
 ## Checkpointing and resume
@@ -53,6 +53,14 @@ Every run is resumable from the store, without pi-agents support for it:
   re-runs; a gate the attorney already decided is picked straight back up because `attorney_review` is
   idempotent per (run, title), and a crash never cancels a pending decision (only an explicit stop does).
   Verified by killing Pi at the contract-review gate: resume ran two more agent calls, not five.
+- **One Pi per run.** Each run row records the Pi process driving it (`owner_pid`), which refreshes
+  `heartbeat_at` every 30 s while it lives, gates and slow models included. The app marks a run stopped
+  only when that process is gone (or has not beaten for 10 minutes); rows from before this keep the old
+  3-minute rule. `resume` refuses a run another live Pi (or this one) is still driving, and the resume
+  is journalled on the run itself, not on a new "inline … (resumed)" row; rows an older version made
+  that way are hidden from the run list, not deleted. Resume runs on the model in the app's "Local
+  model" box, which opening a run fills with that run's model. If Pi does not answer a start or resume
+  within 90 s (usually the extension did not load), the app stops waiting and says so.
 - **Edit state before resume.** A stopped run's completed steps are listed in the app; an attorney can
   replace a step's output and resume — the remainder sees the edited value.
 - **Typed run state with reducers.** `state_update(key, reducer, value)` / `state_get` tools, with `set`,
@@ -66,9 +74,18 @@ Every run is resumable from the store, without pi-agents support for it:
 
 - Pi ≥ 0.85 (`npm i -g @earendil-works/pi-coding-agent`) and Node ≥ 22.5 (`node:sqlite`).
 - pi-agents is declared in `.pi/settings.json` (`npm:pi-agents@0.21.0`); Pi installs it on first trusted run.
-- Ollama with the model named in the app's "Local model" field (default `qwen3.6:latest`). See [docs/local-models.md](docs/local-models.md).
+- Ollama with the model named in the app's "Local model" field (default `qwen3.6:35b-mlx`). See [docs/local-models.md](docs/local-models.md).
 - For the `jev_check` guard: Ollama ≥ 0.35 with `clef` pulled, `DECISION_BASE_URL` in `.env` (see `.env.example`), and `npm install` once in `.pi/extensions/orchestrator/`. See [docs/decisions.md](docs/decisions.md).
 - Project trust. Delegated agents are spawned without `--approve`, so the project must be trusted persistently: run `pi` here once and `/trust`, or click **Allow Pi to use this folder** in the app (both write `~/.pi/agent/trust.json`).
+
+## Unit tests
+
+```sh
+swift test                                      # the app's run logic (no UI, no Pi)
+(cd .pi/extensions/orchestrator && npm test)    # the extension: gate, journal, resume
+```
+
+Both use throwaway stores in a temp folder; neither touches `data/orchestrator.sqlite`.
 
 ## Smoke test (this Mac)
 

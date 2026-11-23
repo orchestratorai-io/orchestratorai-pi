@@ -22,11 +22,16 @@ struct PiApp: App {
 }
 
 struct ContentView: View {
+    /// The "Local model" box's starting value. Matt chose qwen3.6:35b-mlx on
+    /// 2026-11-23 because qwen3.6:latest is no longer installed on the Studio
+    /// (docs/matt-queue-archive.md).
+    static let defaultModel = "qwen3.6:35b-mlx"
+
     @StateObject private var runner = PiRunner()
     @State private var selectedFile: URL?
     @State private var showingImporter = false
     @State private var paramValues: [String: String] = [:]
-    @State private var model = "qwen3.6:latest"
+    @State private var model = ContentView.defaultModel
     @State private var selectedWorkflow = "contract-review"
     @State private var showingActivity = false
     @State private var reviewedIssueIDs: Set<String> = []
@@ -229,6 +234,10 @@ struct ContentView: View {
             selectedFile = nil
         }
         paramValues.merge(run.params) { _, stored in stored }
+        // Show the run's own model, so Resume runs on it unless the attorney types another.
+        if let runModel = run.model, !runModel.trimmingCharacters(in: .whitespaces).isEmpty {
+            model = runModel
+        }
     }
 
     // MARK: Header and setup cards
@@ -548,7 +557,7 @@ struct ContentView: View {
                 StepOutputsCard(
                     run: run,
                     steps: runner.stepOutputs,
-                    onResume: { runner.resume(run: run) },
+                    onResume: { runner.resume(run: run, model: model, fallbackModel: ContentView.defaultModel) },
                     onOverride: { index, text in runner.overrideStep(runId: run.id, stepIndex: index, text: text, note: nil) },
                     onClearOverride: { index in runner.clearOverride(runId: run.id, stepIndex: index) }
                 )

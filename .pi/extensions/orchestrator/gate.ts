@@ -22,6 +22,31 @@ export interface GateResult {
   details: Record<string, unknown>;
 }
 
+/** Set by the macOS app on the Pi it launches; delegated agents inherit it. */
+export const CONSOLE_ENV = "ORCHESTRATORAI_CONSOLE";
+
+export function consoleAttached(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env[CONSOLE_ENV] === "1";
+}
+
+export const SKIPPED: GateResult = {
+  content: [{ type: "text", text: "DECISION: skipped\nCOMMENT: No OrchestratorAI console is attached to this run; continue without an attorney gate." }],
+  details: { skipped: true },
+};
+
+/**
+ * The run an attorney_review call should wait on, or undefined to skip the gate.
+ * Only a run named by its id, and only when the app's console is attached: from a
+ * terminal Pi (a TUI run, or `/orchestrator resume` typed by hand) nobody is
+ * watching, and the gate used to sit there for GATE_MAX_WAIT_MS (12 hours). An
+ * empty or unknown run_id no longer falls back to "the newest running run",
+ * which could be someone else's run.
+ */
+export function gateRun(db: RunStore, runId: string, attached: boolean): RunRow | undefined {
+  if (!attached || !runId) return undefined;
+  return db.getRun(runId) ?? db.findRunByPiId(runId);
+}
+
 export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
     const timer = setTimeout(done, ms);
@@ -68,6 +93,15 @@ export async function attorneyGate(
     db.appendEvent({ runId: run.id, type: "gate_requested", summary: `Waiting for attorney — ${params.title}`, detail: params.summary, payload: { checkpointId: checkpoint.id } });
   }
 
+  const decided = (current: CheckpointRow): GateResult => {
+    const comment = current.decision_comment?.trim() || "(no comment)";
+    db.appendEvent({ runId: run.id, type: "gate_decided", summary: `Attorney ${current.status.replace("_", " ")} — ${params.title}`, detail: comment, payload: { checkpointId: checkpoint.id } });
+    return {
+      content: [{ type: "text", text: `DECISION: ${current.status}\nCOMMENT: ${comment}` }],
+      details: { checkpointId: checkpoint.id, status: current.status },
+    };
+  };
+
   const startedAt = Date.now();
   while (true) {
     if (signal?.aborted) {
@@ -78,16 +112,15 @@ export async function attorneyGate(
       throw new Error("attorney_review interrupted");
     }
     const current = db.getCheckpoint(checkpoint.id);
-    if (current && current.status !== "pending") {
-      const comment = current.decision_comment?.trim() || "(no comment)";
-      db.appendEvent({ runId: run.id, type: "gate_decided", summary: `Attorney ${current.status.replace("_", " ")} — ${params.title}`, detail: comment, payload: { checkpointId: checkpoint.id } });
-      return {
-        content: [{ type: "text", text: `DECISION: ${current.status}\nCOMMENT: ${comment}` }],
-        details: { checkpointId: checkpoint.id, status: current.status },
-      };
-    }
+    if (current && current.status !== "pending") return decided(current);
     if (Date.now() - startedAt > opts.maxWaitMs) {
-      db.cancelPendingCheckpoints(run.id, "Timed out waiting for an attorney decision.");
+      // Cancel only this gate's checkpoint. Other agents in the run may be
+      // waiting on their own approvals, and those stay pending and decidable.
+      if (!db.cancelCheckpointIfPending(checkpoint.id, "Timed out waiting for an attorney decision.")) {
+        // The attorney decided between the last poll and the timeout: use it.
+        const late = db.getCheckpoint(checkpoint.id);
+        if (late && late.status !== "pending" && late.status !== "cancelled") return decided(late);
+      }
       return {
         content: [{ type: "text", text: "DECISION: timed_out\nCOMMENT: No attorney decision was recorded in time." }],
         details: { checkpointId: checkpoint.id, status: "timed_out" },
