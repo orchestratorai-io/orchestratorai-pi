@@ -539,6 +539,18 @@ export class RunStore {
       );
   }
 
+  /** Cancels one checkpoint if it is still pending. Returns false when the
+   * attorney decided it first, so the caller can use that decision instead. */
+  cancelCheckpointIfPending(id: string, reason: string): boolean {
+    const result = this.db
+      .prepare(
+        `UPDATE checkpoints SET status = 'cancelled', decision_comment = ?, decided_at = ?
+         WHERE id = ? AND status = 'pending'`,
+      )
+      .run(reason, nowIso(), id);
+    return Number(result.changes) > 0;
+  }
+
   cancelPendingCheckpoints(runId: string, reason: string): void {
     const at = nowIso();
     this.db

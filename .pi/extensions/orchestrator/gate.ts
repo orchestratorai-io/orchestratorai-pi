@@ -68,6 +68,15 @@ export async function attorneyGate(
     db.appendEvent({ runId: run.id, type: "gate_requested", summary: `Waiting for attorney — ${params.title}`, detail: params.summary, payload: { checkpointId: checkpoint.id } });
   }
 
+  const decided = (current: CheckpointRow): GateResult => {
+    const comment = current.decision_comment?.trim() || "(no comment)";
+    db.appendEvent({ runId: run.id, type: "gate_decided", summary: `Attorney ${current.status.replace("_", " ")} — ${params.title}`, detail: comment, payload: { checkpointId: checkpoint.id } });
+    return {
+      content: [{ type: "text", text: `DECISION: ${current.status}\nCOMMENT: ${comment}` }],
+      details: { checkpointId: checkpoint.id, status: current.status },
+    };
+  };
+
   const startedAt = Date.now();
   while (true) {
     if (signal?.aborted) {
@@ -78,16 +87,15 @@ export async function attorneyGate(
       throw new Error("attorney_review interrupted");
     }
     const current = db.getCheckpoint(checkpoint.id);
-    if (current && current.status !== "pending") {
-      const comment = current.decision_comment?.trim() || "(no comment)";
-      db.appendEvent({ runId: run.id, type: "gate_decided", summary: `Attorney ${current.status.replace("_", " ")} — ${params.title}`, detail: comment, payload: { checkpointId: checkpoint.id } });
-      return {
-        content: [{ type: "text", text: `DECISION: ${current.status}\nCOMMENT: ${comment}` }],
-        details: { checkpointId: checkpoint.id, status: current.status },
-      };
-    }
+    if (current && current.status !== "pending") return decided(current);
     if (Date.now() - startedAt > opts.maxWaitMs) {
-      db.cancelPendingCheckpoints(run.id, "Timed out waiting for an attorney decision.");
+      // Cancel only this gate's checkpoint. Other agents in the run may be
+      // waiting on their own approvals, and those stay pending and decidable.
+      if (!db.cancelCheckpointIfPending(checkpoint.id, "Timed out waiting for an attorney decision.")) {
+        // The attorney decided between the last poll and the timeout: use it.
+        const late = db.getCheckpoint(checkpoint.id);
+        if (late && late.status !== "pending" && late.status !== "cancelled") return decided(late);
+      }
       return {
         content: [{ type: "text", text: "DECISION: timed_out\nCOMMENT: No attorney decision was recorded in time." }],
         details: { checkpointId: checkpoint.id, status: "timed_out" },

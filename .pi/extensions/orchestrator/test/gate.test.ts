@@ -185,3 +185,56 @@ test("after a resume, a decision made while Pi was down is used, not asked again
     cleanup();
   }
 });
+
+test("a gate timeout cancels only its own checkpoint; another pending approval stays decidable", async () => {
+  const { db, run, app, cleanup } = setup();
+  try {
+    // Two agents in one run ask the attorney at the same time (parallel branches).
+    const patient = attorneyGate(db, run, { title: "Approve the expert summary", summary: "Expert summary draft" }, undefined, OPTS);
+    assert.equal(await settle(patient, 50), "still waiting");
+    const hasty = attorneyGate(db, run, { title: "Approve the exhibit list", summary: "Exhibit list draft" }, undefined, { ...OPTS, maxWaitMs: 30 });
+
+    const timedOut = await hasty;
+    assert.match(text(timedOut), /^DECISION: timed_out/);
+    const timedOutRow = db.getCheckpoint(timedOut.details.checkpointId as string)!;
+    assert.equal(timedOutRow.status, "cancelled");
+
+    // The other approval is still pending and the agent is still waiting on it.
+    const pending = app
+      .prepare("SELECT title FROM checkpoints WHERE run_id = ? AND kind = 'gate' AND status = 'pending'")
+      .all(run.id) as Array<{ title: string }>;
+    assert.deepEqual(pending.map((p) => p.title), ["Approve the expert summary"]);
+    assert.equal(await settle(patient, 50), "still waiting");
+
+    // And the attorney can still decide it.
+    decidePending(app, run.id, "approved", "looks right");
+    assert.equal(text(await patient), "DECISION: approved\nCOMMENT: looks right");
+  } finally {
+    cleanup();
+  }
+});
+
+test("a decision recorded just as the gate times out is used, not cancelled", async () => {
+  const { db, run, app, cleanup } = setup();
+  try {
+    // Hold the store's view of the checkpoint at "pending" for one read, as if the
+    // attorney decided between the gate's last poll and its timeout.
+    const realGet = db.getCheckpoint.bind(db);
+    let raced = false;
+    db.getCheckpoint = (id: string) => {
+      const row = realGet(id);
+      const asked = app.prepare("SELECT 1 FROM run_events WHERE run_id = ? AND type = 'gate_requested'").get(run.id);
+      if (row && asked && !raced) {
+        raced = true;
+        decidePending(app, run.id, "approved", "just in time");
+        return { ...row, status: "pending" };
+      }
+      return row;
+    };
+    const result = await attorneyGate(db, run, { title: TITLE, summary: "Q?" }, undefined, { ...OPTS, maxWaitMs: -1 });
+    assert.ok(raced, "the race was not staged");
+    assert.equal(text(result), "DECISION: approved\nCOMMENT: just in time");
+  } finally {
+    cleanup();
+  }
+});
