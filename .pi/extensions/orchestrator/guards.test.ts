@@ -183,11 +183,21 @@ test("privilege: a privileged document in the production set blocks; withheld is
 });
 
 test("signals: a dismissed alert-worthy signal blocks; a duplicate does not", async () => {
-  const signals: Doc[] = [{ name: "01-ruling.md", text: "ruling on Cedar" }, { name: "02-tradepress.md", text: "press on the ruling about Cedar" }, { name: "06-maritime.md", text: "salvage" }];
+  const signals: Doc[] = [
+    { name: "01-ruling.md", text: "Meridian Analytics versus Corvid ruling narrows residuals clauses for Cedar" },
+    { name: "02-tradepress.md", text: "Press coverage: Meridian Analytics versus Corvid narrows residuals clauses, Cedar affected" },
+    { name: "03-enforcement.md", text: "Regulator fines an analytics processor over transfers; Cedar exposure" },
+    { name: "06-maritime.md", text: "salvage" },
+  ];
   const client = stub((state) => ({ touches_portfolio: String(state.signal).includes("Cedar") ? 0.95 : 0.02 }));
-  const good = "## Alert queue\n- 01-ruling.md\n## Dismissed signals\n**Deduplicated:**\n- 02-tradepress.md\n**Out of scope:**\n- 06-maritime.md";
+  const good = "## Alert queue\n- 01-ruling.md\n- 03-enforcement.md\n## Dismissed signals\n**Deduplicated:**\n- 02-tradepress.md\n**Out of scope:**\n- 06-maritime.md";
   assert.equal((await signalGuard({ client, rubrics }, good, signals, "Cedar")).decision, "pass");
-  const bad = "## Alert queue\n- 06-maritime.md\n## Dismissed signals\nOut of scope:\n- 01-ruling.md\n- 02-tradepress.md";
+  // "Duplicate" is not a free pass: with nothing matching in the alert queue it needs a look.
+  const fakeDup = "## Alert queue\n- 01-ruling.md\n## Dismissed signals\n**Duplicates:**\n- 02-tradepress.md\n- 03-enforcement.md\n**Out of scope:**\n- 06-maritime.md";
+  const r0 = await signalGuard({ client, rubrics }, fakeDup, signals, "Cedar");
+  assert.equal(r0.decision, "review");
+  assert.match(r0.reason, /no matching development is in the alert queue: 03-enforcement\.md/);
+  const bad = "## Alert queue\n- 06-maritime.md\n## Dismissed signals\nOut of scope:\n- 01-ruling.md\n- 02-tradepress.md\n- 03-enforcement.md";
   const r = await signalGuard({ client, rubrics }, bad, signals, "Cedar");
   assert.equal(r.decision, "block");
   assert.match(r.reason, /01-ruling\.md/);

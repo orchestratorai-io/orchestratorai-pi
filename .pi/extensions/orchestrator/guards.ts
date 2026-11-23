@@ -520,39 +520,62 @@ export async function privilegeGuard(ctx: GuardContext, report: string, corpus: 
   return { guard: "privilege", rubric: rubric.name, decision, reason, items };
 }
 
-/** signal-classify over each signal; fails a digest that dismisses or omits a signal the rubric would alert on. */
+/** Distinctive words two signals share: the parties and terms that make them the same development. */
+function sharedTerms(a: string, b: string): number {
+  const set = (t: string) => new Set(words(t).filter((w) => w.length >= 5));
+  const A = set(a), B = set(b);
+  let n = 0;
+  for (const w of A) if (B.has(w)) n++;
+  return n;
+}
+
+/**
+ * signal-classify over each signal; fails a digest that dismisses or omits a signal the rubric
+ * would alert on. A signal dismissed as a duplicate passes only when an alert-worthy signal about
+ * the same development (sharing its distinctive terms) is in the alert queue; otherwise "duplicate"
+ * would be a label that excuses any dismissal.
+ */
 export async function signalGuard(ctx: GuardContext, report: string, signals: Doc[], portfolio: string): Promise<GuardResult> {
   const rubric = need(ctx, "signal-classify");
   if (!signals.length) return { guard: "signals", rubric: rubric.name, decision: "review", reason: "No signal files were found to classify.", items: [] };
   const alerts = selectSections(report, ["Alert queue", "Alerts"]);
   const dismissed = selectSections(report, ["Dismissed"]);
+  const DUP = /\b(dedup\w*|duplicat\w*|derivative|same (underlying )?development|already (alerted|covered))\b/i;
+  const asked: Array<{ d: Doc; r: ItemResult }> = [];
+  for (const d of signals) asked.push({ d, r: await ask(ctx, rubric, d.name, { signal: d.text, portfolio }, false) });
+  const alerted = asked.filter(({ d, r }) => r.decision === "block" && !r.error && mentions(alerts, d));
   const items: ItemResult[] = [];
-  const missed: ItemResult[] = [], omitted: ItemResult[] = [], duplicates: ItemResult[] = [];
+  const missed: ItemResult[] = [], omitted: ItemResult[] = [], duplicates: ItemResult[] = [], unmatched: ItemResult[] = [];
   let alertN = 0, possibleN = 0;
-  for (const d of signals) {
-    const r = await ask(ctx, rubric, d.name, { signal: d.text, portfolio }, false);
-    if (r.error) { items.push(r); continue; }
+  for (const { d, r } of asked) {
+    if (r.error) { ctx.onItem?.(rubric, r, d.name); items.push(r); continue; }
     let decision: Decision = "pass";
+    let note = "";
     if (r.decision === "block") {
       alertN++;
-      const inAlerts = mentions(alerts, d);
-      const gone = mentionedUnder(dismissed, d, /\b(dedup\w*|duplicat\w*|derivative|same (underlying )?development|already (alerted|covered))\b/i);
-      if (inAlerts) { /* alerted */ }
-      else if (gone.mentioned && !gone.outsideLabel) { duplicates.push(r); r.reason = "dismissed as a duplicate of an alerted signal"; }
-      else if (gone.mentioned) { decision = "block"; missed.push(r); }
-      else { decision = "review"; omitted.push(r); }
+      const gone = mentionedUnder(dismissed, d, DUP);
+      if (mentions(alerts, d)) note = "; in the alert queue";
+      else if (gone.mentioned && !gone.outsideLabel) {
+        const twin = alerted.find((a) => a.d !== d && sharedTerms(a.d.text, d.text) >= 3);
+        if (twin) { duplicates.push(r); note = `; dismissed as a duplicate of ${path.basename(twin.d.name)}, which is alerted`; }
+        else { decision = "review"; unmatched.push(r); note = "; dismissed as a duplicate, but no matching signal is in the alert queue"; }
+      }
+      else if (gone.mentioned) { decision = "block"; missed.push(r); note = "; dismissed by the digest"; }
+      else { decision = "review"; omitted.push(r); note = "; not in the alert queue"; }
     } else if (r.decision === "review") possibleN++;
-    const mapped: ItemResult = { ...r, decision, reason: `rubric: ${r.reason}${decision === "block" ? "; dismissed by the digest" : decision === "review" ? "; not in the alert queue" : ""}` };
+    const mapped: ItemResult = { ...r, decision, reason: `rubric: ${r.reason}${note}` };
     ctx.onItem?.(rubric, mapped, d.name);
     items.push(mapped);
   }
   const decision = worst(items.map((i) => i.decision));
+  const names = (xs: ItemResult[]) => xs.map((i) => i.item).join(", ");
   const reason =
     `${signals.length} signals classified by the rubric: ${alertN} need an alert, ${possibleN} possibly relevant.` +
-    (missed.length ? ` Dismissed by the digest but alert-worthy: ${missed.map((i) => i.item).join(", ")}.` : "") +
-    (omitted.length ? ` Alert-worthy but not found in the alert queue: ${omitted.map((i) => i.item).join(", ")}.` : "") +
-    (duplicates.length ? ` Dismissed as duplicates of an alerted development: ${duplicates.map((i) => i.item).join(", ")}.` : "") +
-    (decision === "pass" ? " Every alert-worthy signal is in the alert queue or dismissed as a duplicate." : "") +
+    (missed.length ? ` Dismissed by the digest but alert-worthy: ${names(missed)}.` : "") +
+    (omitted.length ? ` Alert-worthy but not found in the alert queue: ${names(omitted)}.` : "") +
+    (unmatched.length ? ` Dismissed as duplicates, but no matching development is in the alert queue: ${names(unmatched)}.` : "") +
+    (duplicates.length ? ` Dismissed as duplicates of an alerted development: ${names(duplicates)}.` : "") +
+    (decision === "pass" ? " Every alert-worthy signal is in the alert queue or a duplicate of one that is." : "") +
     outage(items);
   return { guard: "signals", rubric: rubric.name, decision, reason, items };
 }
