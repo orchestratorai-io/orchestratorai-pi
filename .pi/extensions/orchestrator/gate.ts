@@ -41,17 +41,20 @@ export async function attorneyGate(
   signal: AbortSignal | undefined,
   opts: GateOptions,
 ): Promise<GateResult> {
-  // Idempotent per (run, title): a delegated agent that calls this tool
-  // twice for the same decision reuses the existing checkpoint instead of
-  // asking the attorney the same question again.
-  const existing: CheckpointRow | undefined = db.findCheckpointByTitle(run.id, params.title);
-  if (existing && existing.status !== "pending" && existing.status !== "cancelled") {
+  // Reuse an existing checkpoint only for the same question in the same step:
+  // a pending one is waited on (also after a resume), and a decided one is
+  // handed out again only to an agent that retries the tool before its step
+  // finishes. A loop that asks under one title every turn (cross-exam) gets a
+  // fresh attorney decision for every turn, including after a resume.
+  const existing: CheckpointRow | undefined = db.findGateCheckpoint(run.id, params.title, params.summary);
+  if (existing && existing.status !== "pending" && db.gateDecisionReusable(existing)) {
     const comment = existing.decision_comment?.trim() || "(no comment)";
     return {
       content: [{ type: "text", text: `DECISION: ${existing.status}\nCOMMENT: ${comment}` }],
       details: { checkpointId: existing.id, status: existing.status, reused: true },
     };
   }
+  db.cancelGatesOrphanedByResume(run.id, params.title, params.summary);
   const checkpoint = existing && existing.status === "pending"
     ? existing
     : db.createCheckpoint({
@@ -61,8 +64,8 @@ export async function attorneyGate(
         title: params.title,
         summaryMarkdown: params.summary,
       });
-  if (!existing || existing.status !== "pending") {
-    db.appendEvent({ runId: run.id, type: "gate_requested", summary: `Waiting for attorney — ${params.title}`, detail: params.summary });
+  if (checkpoint !== existing) {
+    db.appendEvent({ runId: run.id, type: "gate_requested", summary: `Waiting for attorney — ${params.title}`, detail: params.summary, payload: { checkpointId: checkpoint.id } });
   }
 
   const startedAt = Date.now();
@@ -77,7 +80,7 @@ export async function attorneyGate(
     const current = db.getCheckpoint(checkpoint.id);
     if (current && current.status !== "pending") {
       const comment = current.decision_comment?.trim() || "(no comment)";
-      db.appendEvent({ runId: run.id, type: "gate_decided", summary: `Attorney ${current.status.replace("_", " ")} — ${params.title}`, detail: comment });
+      db.appendEvent({ runId: run.id, type: "gate_decided", summary: `Attorney ${current.status.replace("_", " ")} — ${params.title}`, detail: comment, payload: { checkpointId: checkpoint.id } });
       return {
         content: [{ type: "text", text: `DECISION: ${current.status}\nCOMMENT: ${comment}` }],
         details: { checkpointId: checkpoint.id, status: current.status },
