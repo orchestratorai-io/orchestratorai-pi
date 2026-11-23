@@ -6,6 +6,7 @@ import * as path from "node:path";
 import YAML from "yaml";
 import { DecisionClient, runRubric } from "./index.ts";
 import { loadRubricDir } from "./node.ts";
+import { checkClaim } from "../guards.ts";
 
 type Suite = { rubric: string; cases: Array<{ name: string; expect: string[]; state: string | Record<string, unknown> }> };
 
@@ -32,7 +33,10 @@ for (const file of fs.readdirSync(casesDir).filter((f) => /\.ya?ml$/.test(f)).so
     total++;
     if (!client) continue;
     try {
-      const r = await runRubric(client, rubric, c.state);
+      // citation-in-record is judged the way the report guard uses it: the rubric plus the code date check.
+      const r = rubric.name === "citation-in-record" && typeof c.state === "object"
+        ? await checkClaim(client, rubric, String(c.state.claim), String(c.state.record)).then((x) => ({ ...x.result, decision: x.decision, reason: x.reason }))
+        : await runRubric(client, rubric, c.state);
       const ok = c.expect.includes(r.decision);
       if (!ok) failed++;
       console.log(`  ${ok ? "✓" : "✗"} ${c.name.padEnd(52)} ${r.decision.padEnd(6)} expected ${c.expect.join("|").padEnd(12)} (${r.reason}) [${r.model}]`);

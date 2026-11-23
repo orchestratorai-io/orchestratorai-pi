@@ -1,5 +1,5 @@
 name: citation-in-record
-version: 4
+version: 5
 description: >-
   Is a cited authority or fact actually present in the supplied record? Guards the
   hallucinated citations and invented dates seen in generated legal reports.
@@ -7,6 +7,18 @@ input:
   claim: { type: string, description: "The citation or factual statement exactly as written in the generated output." }
   record: { type: string, description: "The source text the claim should come from." }
 questions:
+  asserts_fact:
+    type: noul
+    instructions: >-
+      Does the claim assert something as a fact about the parties, documents, or events (what a
+      document says, a figure, a date, who did what), rather than recommend, propose, or negotiate a term,
+      or state the writer's own assessment?
+    criteria:
+      true: It states what is or was - a document's content, a number, a date, an event, a status.
+      false: >-
+        It recommends, proposes, or requests a deal term, action, condition, or position (for example a
+        holdback, cap, basket, survival period, covenant, or next step), or it states the writer's own
+        assessment of the facts (that something is a gap, a failure, a risk, or a violation).
   supported:
     type: noul
     instructions: Is the claim supported by the record supplied?
@@ -28,6 +40,11 @@ questions:
       - In the record but misquoted, misdated, or overstated.
       - Accurately reflects the record.
 routing:
+  # v5: generated legal work product is mostly proposals (a 10% holdback, a 24-month survival) and the
+  # writer's own assessments ("a critical failure under Art 6(1)"). Those are not claims about the record
+  # and must not be blocked for being absent from it. Found calibrating on stored deal memos (4-6 proposed
+  # terms per memo blocked otherwise sound runs) and a compliance audit.
+  - { question: asserts_fact, lt: 0.5, decision: pass, reason: a proposal or assessment, not a claim about the record }
   - { question: supported, lt: 0.2, decision: block, reason: not in the record }
   - { question: invented_detail, gte: 0.5, decision: block, reason: states a detail the record does not }
   - { question: fidelity, lt: 1.5, decision: review, reason: present but distorted }

@@ -29,6 +29,14 @@ doc: |-
     focusSubtitle: Work the weakest moments with the witness. Answer each question in the gate note as the witness would.
     blurb: Review the transcript, scores, and coaching before the real deposition. Recording Approve or Request changes completes the attorney-review checkpoint.
   ```
+
+  ```orchestrator-guards
+  step: debrief
+  checks:
+    - { guard: coaching, include: [Coaching recommendations] }
+    - { guard: citations, record: ["{params.knowledge_dir}"], record_text: "{params.witness}. {params.case_facts}", record_steps: [examination], skip: [Transcript, Limitations, Quality guards] }
+    - { guard: severity }
+  ```
 flow:
   kind: sequence
   steps:
@@ -155,4 +163,23 @@ flow:
         {exam.transcript}
 
         Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+      as: draft
+
+    # Quality guards (see the orchestrator-guards block in doc): Clef checks the finished report,
+    # and the result is appended to it, so the attorney reviews the report and its guard section together.
+    - kind: agent
+      profile: guard-gate
+      label: quality-guards
+      task: |-
+        Call the report_guard tool exactly once with run_id "{params.run_id}".
+        Then submit the tool's returned Markdown verbatim as your result.
+      as: guards
+
+    - kind: value
+      label: guarded-report
+      value: |-
+        {draft}
+
+        {guards}
       as: report
+display: report

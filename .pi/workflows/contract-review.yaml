@@ -33,6 +33,13 @@ doc: |-
     focusSubtitle: Work the Red/Blue standout issues before approving. Same shared HITL checkpoint as other Ready workflows.
     blurb: Confirm Red/Blue findings and judgment calls in the report. Recording Approve or Request changes completes the attorney-review checkpoint — not a legal opinion.
   ```
+
+  ```orchestrator-guards
+  step: summary-generation
+  checks:
+    - { guard: citations, record: ["{params.target}"], skip: [Limitations, Quality guards] }
+    - { guard: severity }
+  ```
 flow:
   kind: sequence
   steps:
@@ -66,5 +73,23 @@ flow:
         target: "{params.target}"
         context: "{params.context}"
         attorney_notes: "{gate}"
+      as: draft
+
+    # Quality guards (see the orchestrator-guards block in doc): Clef checks the finished report,
+    # and the result is appended to it, so the attorney reviews the report and its guard section together.
+    - kind: agent
+      profile: guard-gate
+      label: quality-guards
+      task: |-
+        Call the report_guard tool exactly once with run_id "{params.run_id}".
+        Then submit the tool's returned Markdown verbatim as your result.
+      as: guards
+
+    - kind: value
+      label: guarded-report
+      value: |-
+        {draft}
+
+        {guards}
       as: report
 display: report

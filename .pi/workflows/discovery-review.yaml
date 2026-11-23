@@ -32,6 +32,13 @@ doc: |-
     focusSubtitle: Privilege calls are the ones that cannot be wrong. Work those first; the log is built from them.
     blurb: Confirm the coding, the production set, and the privilege log before anything leaves your control. Recording Approve or Request changes completes the attorney-review checkpoint.
   ```
+
+  ```orchestrator-guards
+  step: report
+  checks:
+    - { guard: privilege, record: ["{params.target}"], privilege_holders: "{params.privilege_holders}", matter: "{params.matter}" }
+    - { guard: severity }
+  ```
 flow:
   kind: sequence
   steps:
@@ -189,4 +196,23 @@ flow:
         {coded}
 
         Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+      as: draft
+
+    # Quality guards (see the orchestrator-guards block in doc): Clef checks the finished report,
+    # and the result is appended to it, so the attorney reviews the report and its guard section together.
+    - kind: agent
+      profile: guard-gate
+      label: quality-guards
+      task: |-
+        Call the report_guard tool exactly once with run_id "{params.run_id}".
+        Then submit the tool's returned Markdown verbatim as your result.
+      as: guards
+
+    - kind: value
+      label: guarded-report
+      value: |-
+        {draft}
+
+        {guards}
       as: report
+display: report

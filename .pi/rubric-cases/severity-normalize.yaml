@@ -18,3 +18,31 @@ cases:
       finding: >-
         The limitation of liability caps damages at 12 months of fees, below the company's usual 24 months.
         Push for 24 months if there is leverage; otherwise accept and note it in the contract register.
+
+  # Added 2026-11-23 from checklist findings in stored Pi reports (deal memo, discovery, onboarding).
+  - name: lender may accelerate on an existing covenant breach
+    expect: [block]
+    state:
+      finding: "Meridian may accelerate the $9.5M term loan: the Q2 net leverage of 3.4x breaches the 3.0x covenant and the waiver is oral only. Obtain a written waiver before signing."
+  - name: privilege-logged email needs a second look
+    expect: [block, review]
+    state:
+      finding: "002-email-counsel-advice.md is coded privileged; confirm the privilege log entry names the advising attorney before production."
+  - name: stale 409A valuation on recent option grants
+    expect: [block, review]
+    state:
+      finding: "310,000 options were granted in March 2026 on a November 2024 409A valuation; obtain a refreshed valuation and assess discounted-option exposure for grantees."
+  - name: missing signature block in an unsigned draft
+    expect: [review, block]
+    state:
+      finding: "The draft has no signature block for either party. Add execution blocks before circulating it for signature."
+  # A wrong cross-reference can change which clause applies, so MEDIUM is defensible; labelled
+  # LOW-or-MEDIUM rather than tuned to one answer. Needs an attorney's label like the rest.
+  - name: renumber a cross-reference
+    expect: [pass, review]
+    state:
+      finding: "Section 7.2 refers to 'Section 5.4', which was renumbered 5.3 in this draft. Correct the cross-reference."
+  - name: formatting of the exhibit list
+    expect: [pass]
+    state:
+      finding: "The exhibit list uses both 'Exhibit A' and 'Ex. A'. Use one form consistently."
