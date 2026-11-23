@@ -10,7 +10,7 @@ import { route, type Rubric, type DecisionClient } from "./decisions/index.ts";
 import { loadRubricDir } from "./decisions/node.ts";
 import {
   datesIn, missingDates, splitSentences, extractClaims, extractFindings, selectSections, pickRecord, loadDocs,
-  mentionedUnder, guardBlock, validateSpec, fill, citationGuard, severityGuard, privilegeGuard, signalGuard,
+  mentions, mentionedUnder, guardBlock, validateSpec, fill, citationGuard, severityGuard, privilegeGuard, signalGuard,
   coachingGuard, runGuards, type Doc,
 } from "./guards.ts";
 
@@ -92,6 +92,14 @@ test("a sub-label inside a section is honoured (Withheld:, Deduplicated:)", () =
   const batches = "*   **Batch 1: Privileged (Withheld & Disclosed via Log)**\n    `002-email-counsel-advice.md` (full redaction)\n*   **Batch 3: Non-Privileged & Responsive**\n    `005-invoice.md` produced";
   assert.deepEqual(mentionedUnder(batches, d, /withh[oe]ld/i), { mentioned: true, underLabel: true, outsideLabel: false }, "a bold bullet is a label");
   assert.deepEqual(mentionedUnder("- 002-email-counsel-advice.md (ready)", d, /withh[oe]ld/i), { mentioned: true, underLabel: false, outsideLabel: true });
+});
+
+test("a digest that names a signal by its title still counts as naming it", () => {
+  const d: Doc = { name: "fixtures/sentinel/signals/01-ruling-residuals.md", text: "**Synthetic**\n\n# Ruling - Meridian Analytics v. Corvid Labs (9th Cir., Sept 8 2026)\n\nBody." };
+  const other: Doc = { name: "06-ruling-maritime.md", text: "# Ruling - Port of Calder Authority v. Sundance Shipping (Sept 7 2026)" };
+  const queue = "1. **Meridian Analytics v. Corvid Labs (Ninth Circuit)**\n   - Action: assess the residuals defence.\n\n2. **DPA Enforcement Action (EU Privacy)**";
+  assert.equal(mentions(queue, d), true);
+  assert.equal(mentions(queue, other), false);
 });
 
 test("record: small records whole, large records by relevance", () => {
@@ -184,10 +192,10 @@ test("privilege: a privileged document in the production set blocks; withheld is
 
 test("signals: a dismissed alert-worthy signal blocks; a duplicate does not", async () => {
   const signals: Doc[] = [
-    { name: "01-ruling.md", text: "Meridian Analytics versus Corvid ruling narrows residuals clauses for Cedar" },
-    { name: "02-tradepress.md", text: "Press coverage: Meridian Analytics versus Corvid narrows residuals clauses, Cedar affected" },
-    { name: "03-enforcement.md", text: "Regulator fines an analytics processor over transfers; Cedar exposure" },
-    { name: "06-maritime.md", text: "salvage" },
+    { name: "01-ruling.md", text: "# Ruling - Meridian Analytics v. Corvid Labs\nThe court narrowed residuals clauses; Cedar affected." },
+    { name: "02-tradepress.md", text: "# Trade press - Appeals court tightens the residuals clause\nCoverage of Meridian Analytics v. Corvid Labs; Cedar affected." },
+    { name: "03-enforcement.md", text: "# Enforcement - Authority fines an analytics processor\nTransfers on a lapsed framework; Cedar exposure; residuals clauses." },
+    { name: "06-maritime.md", text: "# Ruling - Port of Calder v. Sundance Shipping\nsalvage" },
   ];
   const client = stub((state) => ({ touches_portfolio: String(state.signal).includes("Cedar") ? 0.95 : 0.02 }));
   const good = "## Alert queue\n- 01-ruling.md\n- 03-enforcement.md\n## Dismissed signals\n**Deduplicated:**\n- 02-tradepress.md\n**Out of scope:**\n- 06-maritime.md";
@@ -197,6 +205,11 @@ test("signals: a dismissed alert-worthy signal blocks; a duplicate does not", as
   const r0 = await signalGuard({ client, rubrics }, fakeDup, signals, "Cedar");
   assert.equal(r0.decision, "review");
   assert.match(r0.reason, /no matching development is in the alert queue: 03-enforcement\.md/);
+  // Left out but verifiably the same development as an alert: fine. Left out and unrelated: review.
+  const folded = "## Alert queue\n1. **Meridian Analytics v. Corvid Labs**\n2. **Authority fines an analytics processor**\n## Dismissed signals\n- 06-maritime.md";
+  assert.equal((await signalGuard({ client, rubrics }, folded, signals, "Cedar")).decision, "pass");
+  const lost = "## Alert queue\n1. **Meridian Analytics v. Corvid Labs**\n## Dismissed signals\n- 06-maritime.md";
+  assert.equal((await signalGuard({ client, rubrics }, lost, signals, "Cedar")).decision, "review");
   const bad = "## Alert queue\n- 06-maritime.md\n## Dismissed signals\nOut of scope:\n- 01-ruling.md\n- 02-tradepress.md\n- 03-enforcement.md";
   const r = await signalGuard({ client, rubrics }, bad, signals, "Cedar");
   assert.equal(r.decision, "block");

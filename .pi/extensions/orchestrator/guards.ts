@@ -291,9 +291,32 @@ export function mentionedUnder(section: string, d: Doc, label: RegExp): { mentio
   return { mentioned, underLabel, outsideLabel };
 }
 
+/** The distinctive words of a document's title: no dates, numbers or short words. */
+function titleTerms(d: Doc): string[] {
+  const h = /^#{1,6}\s+(.+)$/m.exec(d.text)?.[1] ?? "";
+  return [...new Set(words(h.replace(/[*_`]/g, "")).filter((w) => w.length >= 4 && !/\d/.test(w) && !MONTH.test(w)))];
+}
+
+/** Entries of a section: top-level list items, numbered items and paragraphs. */
+function entries(text: string): string[] {
+  return text.split(/\n(?=(?:[-*+]|\d+[.)])\s)|\n\s*\n/).map((e) => e.trim()).filter(Boolean);
+}
+
+/**
+ * Does the text refer to this document: by file name or stem, by its full title, or by an entry
+ * that carries most of the title's distinctive words (a digest writes "Meridian Analytics v. Corvid
+ * Labs (Ninth Circuit)" for the file titled "Ruling - Meridian Analytics v. Corvid Labs (9th Cir.)").
+ */
 export function mentions(text: string, d: Doc): boolean {
   const hay = text.toLowerCase().replace(/[-_]+/g, " ");
-  return docNames(d).some((n) => hay.includes(n.toLowerCase().replace(/[-_]+/g, " ")));
+  if (docNames(d).some((n) => hay.includes(n.toLowerCase().replace(/[-_]+/g, " ")))) return true;
+  const terms = titleTerms(d);
+  if (terms.length < 2) return false;
+  return entries(text).some((e) => {
+    const low = e.toLowerCase();
+    const hit = terms.filter((t) => low.includes(t)).length;
+    return hit >= 2 && hit / terms.length >= 0.6;
+  });
 }
 
 
@@ -520,20 +543,11 @@ export async function privilegeGuard(ctx: GuardContext, report: string, corpus: 
   return { guard: "privilege", rubric: rubric.name, decision, reason, items };
 }
 
-/** Distinctive words two signals share: the parties and terms that make them the same development. */
-function sharedTerms(a: string, b: string): number {
-  const set = (t: string) => new Set(words(t).filter((w) => w.length >= 5));
-  const A = set(a), B = set(b);
-  let n = 0;
-  for (const w of A) if (B.has(w)) n++;
-  return n;
-}
-
 /**
  * signal-classify over each signal; fails a digest that dismisses or omits a signal the rubric
- * would alert on. A signal dismissed as a duplicate passes only when an alert-worthy signal about
- * the same development (sharing its distinctive terms) is in the alert queue; otherwise "duplicate"
- * would be a label that excuses any dismissal.
+ * would alert on. A signal dismissed as a duplicate, or left out, passes only when it is verifiably
+ * the same development as a signal in the alert queue: one of the two names the other (the trade
+ * press piece names the ruling). Otherwise "duplicate" would be a label that excuses any dismissal.
  */
 export async function signalGuard(ctx: GuardContext, report: string, signals: Doc[], portfolio: string): Promise<GuardResult> {
   const rubric = need(ctx, "signal-classify");
@@ -554,13 +568,14 @@ export async function signalGuard(ctx: GuardContext, report: string, signals: Do
     if (r.decision === "block") {
       alertN++;
       const gone = mentionedUnder(dismissed, d, DUP);
+      const twin = alerted.find((a) => a.d !== d && (mentions(d.text, a.d) || mentions(a.d.text, d)));
       if (mentions(alerts, d)) note = "; in the alert queue";
       else if (gone.mentioned && !gone.outsideLabel) {
-        const twin = alerted.find((a) => a.d !== d && sharedTerms(a.d.text, d.text) >= 3);
         if (twin) { duplicates.push(r); note = `; dismissed as a duplicate of ${path.basename(twin.d.name)}, which is alerted`; }
         else { decision = "review"; unmatched.push(r); note = "; dismissed as a duplicate, but no matching signal is in the alert queue"; }
       }
       else if (gone.mentioned) { decision = "block"; missed.push(r); note = "; dismissed by the digest"; }
+      else if (twin) { duplicates.push(r); note = `; not listed, but the same development as ${path.basename(twin.d.name)}, which is alerted`; }
       else { decision = "review"; omitted.push(r); note = "; not in the alert queue"; }
     } else if (r.decision === "review") possibleN++;
     const mapped: ItemResult = { ...r, decision, reason: `rubric: ${r.reason}${note}` };
@@ -574,7 +589,7 @@ export async function signalGuard(ctx: GuardContext, report: string, signals: Do
     (missed.length ? ` Dismissed by the digest but alert-worthy: ${names(missed)}.` : "") +
     (omitted.length ? ` Alert-worthy but not found in the alert queue: ${names(omitted)}.` : "") +
     (unmatched.length ? ` Dismissed as duplicates, but no matching development is in the alert queue: ${names(unmatched)}.` : "") +
-    (duplicates.length ? ` Dismissed as duplicates of an alerted development: ${names(duplicates)}.` : "") +
+    (duplicates.length ? ` Duplicates of an alerted development: ${names(duplicates)}.` : "") +
     (decision === "pass" ? " Every alert-worthy signal is in the alert queue or a duplicate of one that is." : "") +
     outage(items);
   return { guard: "signals", rubric: rubric.name, decision, reason, items };
