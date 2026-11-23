@@ -38,6 +38,7 @@ import { Type } from "typebox";
 import { RunStore, type RunRow } from "./store";
 import { DecisionClient, runRubric, type Rubric } from "./decisions/index.ts";
 import { guardBlock, validateSpec, runGuards, type GuardContext, type GuardSpec } from "./guards.ts";
+import { attorneyGate, sleep } from "./gate.ts";
 
 const CALLER = "orchestratorai";
 const REPLY_TYPE = "orchestrator:reply";
@@ -184,19 +185,6 @@ function stringMap(raw: unknown): Record<string, string> {
   }
   return out;
 }
-
-function sleep(ms: number, signal?: AbortSignal): Promise<void> {
-  return new Promise((resolve) => {
-    const timer = setTimeout(done, ms);
-    function done() {
-      signal?.removeEventListener("abort", done);
-      clearTimeout(timer);
-      resolve();
-    }
-    signal?.addEventListener("abort", done, { once: true });
-  });
-}
-
 
 // Raw pi-agents event-bus client. The documented channels need no import from
 // the pi-agents package, which keeps this extension independent of where Pi
@@ -595,57 +583,7 @@ export default function orchestrator(pi: any) {
         };
       }
 
-      // Idempotent per (run, title): a delegated agent that calls this tool
-      // twice for the same decision reuses the existing checkpoint instead of
-      // asking the attorney the same question again.
-      const existing = db.findCheckpointByTitle(run.id, params.title);
-      if (existing && existing.status !== "pending" && existing.status !== "cancelled") {
-        const comment = existing.decision_comment?.trim() || "(no comment)";
-        return {
-          content: [{ type: "text", text: `DECISION: ${existing.status}\nCOMMENT: ${comment}` }],
-          details: { checkpointId: existing.id, status: existing.status, reused: true },
-        };
-      }
-      const checkpoint = existing && existing.status === "pending"
-        ? existing
-        : db.createCheckpoint({
-            id: randomUUID(),
-            runId: run.id,
-            kind: "gate",
-            title: params.title,
-            summaryMarkdown: params.summary,
-          });
-      if (!existing || existing.status !== "pending") {
-        db.appendEvent({ runId: run.id, type: "gate_requested", summary: `Waiting for attorney — ${params.title}`, detail: params.summary });
-      }
-
-      const startedAt = Date.now();
-      while (true) {
-        if (signal?.aborted) {
-          // The agent is going away (Pi killed, run stopped) but the attorney has not decided.
-          // Leave the checkpoint pending: a resumed gate step finds it and waits on the same row.
-          // An explicit /orchestrator stop cancels pending checkpoints itself.
-          db.appendEvent({ runId: run.id, type: "gate_interrupted", summary: `Gate interrupted, still awaiting attorney — ${params.title}` });
-          throw new Error("attorney_review interrupted");
-        }
-        const current = db.getCheckpoint(checkpoint.id);
-        if (current && current.status !== "pending") {
-          const comment = current.decision_comment?.trim() || "(no comment)";
-          db.appendEvent({ runId: run.id, type: "gate_decided", summary: `Attorney ${current.status.replace("_", " ")} — ${params.title}`, detail: comment });
-          return {
-            content: [{ type: "text", text: `DECISION: ${current.status}\nCOMMENT: ${comment}` }],
-            details: { checkpointId: checkpoint.id, status: current.status },
-          };
-        }
-        if (Date.now() - startedAt > GATE_MAX_WAIT_MS) {
-          db.cancelPendingCheckpoints(run.id, "Timed out waiting for an attorney decision.");
-          return {
-            content: [{ type: "text", text: "DECISION: timed_out\nCOMMENT: No attorney decision was recorded in time." }],
-            details: { checkpointId: checkpoint.id, status: "timed_out" },
-          };
-        }
-        await sleep(GATE_POLL_MS, signal);
-      }
+      return attorneyGate(db, run, params, signal, { pollMs: GATE_POLL_MS, maxWaitMs: GATE_MAX_WAIT_MS, newId: randomUUID });
     },
   });
 
