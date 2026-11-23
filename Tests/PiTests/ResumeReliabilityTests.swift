@@ -76,6 +76,10 @@ final class ResumeReliabilityTests: XCTestCase {
         XCTAssertEqual(ResumeModel.choose(picked: " qwen3.6:35b-mlx ", runModel: "qwen3.6:latest", fallback: ContentView.defaultModel), "qwen3.6:35b-mlx")
     }
 
+    func testDefaultModelIsTheOneInstalledOnTheStudio() {
+        XCTAssertEqual(ContentView.defaultModel, "qwen3.6:35b-mlx")
+    }
+
     func testResumeWithAnEmptyBoxUsesTheRunsModelThenTheDefault() {
         XCTAssertEqual(ResumeModel.choose(picked: "", runModel: "qwen3-coder-next", fallback: ContentView.defaultModel), "qwen3-coder-next")
         XCTAssertEqual(ResumeModel.choose(picked: "  ", runModel: nil, fallback: ContentView.defaultModel), ContentView.defaultModel)

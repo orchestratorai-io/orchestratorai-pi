@@ -74,7 +74,7 @@ Every run is resumable from the store, without pi-agents support for it:
 
 - Pi ≥ 0.85 (`npm i -g @earendil-works/pi-coding-agent`) and Node ≥ 22.5 (`node:sqlite`).
 - pi-agents is declared in `.pi/settings.json` (`npm:pi-agents@0.21.0`); Pi installs it on first trusted run.
-- Ollama with the model named in the app's "Local model" field (default `qwen3.6:latest`). See [docs/local-models.md](docs/local-models.md).
+- Ollama with the model named in the app's "Local model" field (default `qwen3.6:35b-mlx`). See [docs/local-models.md](docs/local-models.md).
 - For the `jev_check` guard: Ollama ≥ 0.35 with `clef` pulled, `DECISION_BASE_URL` in `.env` (see `.env.example`), and `npm install` once in `.pi/extensions/orchestrator/`. See [docs/decisions.md](docs/decisions.md).
 - Project trust. Delegated agents are spawned without `--approve`, so the project must be trusted persistently: run `pi` here once and `/trust`, or click **Allow Pi to use this folder** in the app (both write `~/.pi/agent/trust.json`).
 

@@ -22,8 +22,10 @@ struct PiApp: App {
 }
 
 struct ContentView: View {
-    /// The "Local model" box's starting value (see docs/matt-queue.md).
-    static let defaultModel = "qwen3.6:latest"
+    /// The "Local model" box's starting value. Matt chose qwen3.6:35b-mlx on
+    /// 2026-11-23 because qwen3.6:latest is no longer installed on the Studio
+    /// (docs/matt-queue-archive.md).
+    static let defaultModel = "qwen3.6:35b-mlx"
 
     @StateObject private var runner = PiRunner()
     @State private var selectedFile: URL?
