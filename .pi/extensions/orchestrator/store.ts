@@ -462,15 +462,53 @@ export class RunStore {
       .get(id) as CheckpointRow | undefined;
   }
 
-  /** Most recent checkpoint for this run with the same title, if any. Used to
-   * make the attorney_review tool idempotent: an agent that calls it twice for
-   * the same decision must not ask the attorney the same question twice. */
-  findCheckpointByTitle(runId: string, title: string): CheckpointRow | undefined {
+  /** Most recent live (not cancelled) attorney gate in this run asking exactly
+   * this question: same title and same summary. The title alone is not enough,
+   * because a workflow loop (cross-exam) asks under one title every turn. */
+  findGateCheckpoint(runId: string, title: string, summary: string): CheckpointRow | undefined {
     return this.db
       .prepare(
-        "SELECT * FROM checkpoints WHERE run_id = ? AND title = ? ORDER BY requested_at DESC LIMIT 1",
+        `SELECT * FROM checkpoints
+         WHERE run_id = ? AND kind = 'gate' AND title = ? AND summary_markdown IS ? AND status != 'cancelled'
+         ORDER BY requested_at DESC, rowid DESC LIMIT 1`,
       )
-      .get(runId, title) as CheckpointRow | undefined;
+      .get(runId, title, summary) as CheckpointRow | undefined;
+  }
+
+  /** Whether an already-decided gate may be handed out again. Yes if no step
+   * has received the decision yet (the attorney decided while Pi was down).
+   * Once it has been handed out, only the same step may get it again (an agent
+   * retrying the tool): not after any step has completed or the run has been
+   * resumed since, because by then a new call is a new turn that needs its own
+   * decision. Ordered by event seq, since the app writes decided_at in a
+   * different timestamp format. */
+  gateDecisionReusable(checkpoint: CheckpointRow): boolean {
+    const delivered = this.db
+      .prepare(
+        `SELECT MIN(seq) AS seq FROM run_events
+         WHERE run_id = ? AND type = 'gate_decided' AND payload_json LIKE ?`,
+      )
+      .get(checkpoint.run_id, `%${checkpoint.id}%`) as { seq: number | null } | undefined;
+    if (delivered?.seq == null) return true; // decided, but no step has received it yet
+    const movedOn = this.db
+      .prepare("SELECT 1 FROM run_events WHERE run_id = ? AND type IN ('node_completed', 'resume') AND seq > ? LIMIT 1")
+      .get(checkpoint.run_id, delivered.seq);
+    return !movedOn;
+  }
+
+  /** Cancels gates with this title that were still waiting when the run was
+   * last resumed but ask a different question than `summary`. A resumed loop
+   * starts its turns over with new questions, so those old asks have no step
+   * left to answer them. */
+  cancelGatesOrphanedByResume(runId: string, title: string, summary: string): void {
+    const at = nowIso();
+    this.db
+      .prepare(
+        `UPDATE checkpoints SET status = 'cancelled', decision_comment = ?, decided_at = ?
+         WHERE run_id = ? AND kind = 'gate' AND status = 'pending' AND title = ? AND summary_markdown IS NOT ?
+           AND requested_at < (SELECT MAX(at) FROM run_events WHERE run_id = ? AND type = 'resume')`,
+      )
+      .run("Superseded after the run was resumed.", at, runId, title, summary, runId);
   }
 
   // ---------------------------------------------------------- evaluations
