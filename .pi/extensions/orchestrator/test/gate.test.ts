@@ -186,7 +186,7 @@ test("after a resume, a decision made while Pi was down is used, not asked again
   }
 });
 
-test("a gate timeout cancels only its own checkpoint; another pending approval stays decidable", async () => {
+test("a gate timeout times out only its own checkpoint; another pending approval stays decidable", async () => {
   const { db, run, app, cleanup } = setup();
   try {
     // Two agents in one run ask the attorney at the same time (parallel branches).
@@ -197,7 +197,7 @@ test("a gate timeout cancels only its own checkpoint; another pending approval s
     const timedOut = await hasty;
     assert.match(text(timedOut), /^DECISION: timed_out/);
     const timedOutRow = db.getCheckpoint(timedOut.details.checkpointId as string)!;
-    assert.equal(timedOutRow.status, "cancelled");
+    assert.equal(timedOutRow.status, "timed_out");
 
     // The other approval is still pending and the agent is still waiting on it.
     const pending = app
@@ -262,6 +262,67 @@ test("an empty or unknown run_id skips the gate rather than attaching to another
     assert.equal(gateRun(db, "no-such-run", true), undefined);
     assert.equal(gateRun(db, run.id, true)?.id, run.id, "the app's own run, named by id, still waits");
     assert.equal(gateRun(db, "pi-run-1", true)?.id, run.id, "a pi-agents run id resolves to its local run");
+  } finally {
+    cleanup();
+  }
+});
+
+// ---- Gate leftovers (2026-11-23): no app run behind a gate; timed-out status
+
+test("a gate in a run journalled from a terminal is skipped, even with the console attached", async () => {
+  const { db, cleanup } = setup();
+  try {
+    const tui = db.createRun({ id: "pi-tui-1", workflow: "contract-review", title: "TUI run", params: {}, origin: "tui" });
+    db.markStarted(tui.id, tui.id);
+    const app = db.createRun({ id: randomUUID(), workflow: "contract-review", title: "App run", params: {}, origin: "app" });
+    db.markStarted(app.id, "pi-app-1");
+    assert.equal(gateRun(db, tui.id, true), undefined, "nobody in the app answers a terminal run's gate");
+    assert.equal(gateRun(db, app.id, true)?.id, app.id);
+    assert.equal(gateRun(db, "pi-app-1", true)?.id, app.id);
+    // Rows from before the origin column (null) keep waiting, as they did.
+    const legacy = db.createRun({ id: randomUUID(), workflow: "contract-review", title: "Old run", params: {} });
+    assert.equal(legacy.origin, null);
+    assert.equal(gateRun(db, legacy.id, true)?.id, legacy.id);
+  } finally {
+    cleanup();
+  }
+});
+
+test("no tool falls back to the newest running run when no run id is given", async () => {
+  const { db, run, cleanup } = setup();
+  try {
+    db.markStarted(run.id, "pi-run-1"); // live, and the newest
+    assert.equal(db.namedRun(""), undefined);
+    assert.equal(db.namedRun("no-such-run"), undefined);
+    assert.equal(db.namedRun(run.id)?.id, run.id);
+    assert.equal(db.namedRun("pi-run-1")?.id, run.id);
+    assert.equal((db as unknown as Record<string, unknown>).latestRunningRun, undefined, "the fallback is gone");
+    assert.equal(gateRun(db, "", true), undefined);
+  } finally {
+    cleanup();
+  }
+});
+
+test("a timed-out gate is stored as timed_out, journalled, and a new ask gets a fresh checkpoint", async () => {
+  const { db, run, app, cleanup } = setup();
+  try {
+    const params = { title: "Approve the exhibit list", summary: "Exhibit list draft" };
+    const result = await attorneyGate(db, run, params, undefined, { ...OPTS, maxWaitMs: 20 });
+    assert.equal(result.details.status, "timed_out");
+    const row = db.getCheckpoint(result.details.checkpointId as string)!;
+    assert.equal(row.status, "timed_out");
+    assert.equal(row.decision_comment, "No attorney decision was recorded in time.");
+    assert.ok(row.decided_at);
+    const events = app.prepare("SELECT type FROM run_events WHERE run_id = ? ORDER BY seq").all(run.id) as Array<{ type: string }>;
+    assert.deepEqual(events.map((e) => e.type), ["gate_requested", "gate_timed_out"]);
+
+    // Asking again is a new wait, not the timed-out row handed back.
+    const again = attorneyGate(db, run, params, undefined, OPTS);
+    assert.equal(await settle(again), "still waiting");
+    const rows = app.prepare("SELECT status FROM checkpoints WHERE run_id = ? ORDER BY requested_at, rowid").all(run.id) as Array<{ status: string }>;
+    assert.deepEqual(rows.map((r) => r.status), ["timed_out", "pending"]);
+    decidePending(app, run.id, "approved", "ok");
+    assert.match(text(await again), /^DECISION: approved/);
   } finally {
     cleanup();
   }

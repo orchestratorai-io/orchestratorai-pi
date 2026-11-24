@@ -19,7 +19,7 @@
 
 **Answer:** Option 2, "switch the default to the mlx one" (Matt's choice on the morning of 2026-11-23, relayed by the CEO; his exact wording was not passed on).
 
-**Processed note:** Pi's default model is now `qwen3.6:35b-mlx` (`ContentView.defaultModel` in `Sources/Pi/PiApp.swift`, the README, `docs/local-models.md`, and a test pinning the default). `dist/Pi.app` was rebuilt with it. Runs already saved keep the model they were made with. No workflow has had a fresh run on the new model yet; that stays with the local-model work. `.pi/workflows/prep-probe-qwen36.yaml` still names `qwen3.6:latest` on purpose (it is a probe of that exact model) and will fail until that model is pulled again.
+**Processed note:** Pi's default model is now `qwen3.6:35b-mlx` (`ContentView.defaultModel` in `Sources/Pi/PiApp.swift`, the README, `docs/local-models.md`, and a test pinning the default). `dist/Pi.app` was rebuilt with it. Runs already saved keep the model they were made with. No workflow has had a fresh run on the new model yet; that stays with the local-model work. `.pi/workflows/prep-probe-qwen36.yaml` still names `qwen3.6:latest` on purpose (it is a probe of that exact model) and will fail until that model is pulled again. (Later on 2026-11-23 the probe was repointed to `qwen3.6:35b-mlx`, since the app catalog, the clickthrough screenshots script and the docs still use it.)
 
 ## Install Xcode on the Mac Studio, or Pi cannot be rebuilt
 
