@@ -98,9 +98,11 @@ export async function attorneyGate(
     db.appendEvent({ runId: run.id, type: "gate_requested", summary: `Waiting for attorney — ${params.title}`, detail: params.summary, payload: { checkpointId: checkpoint.id } });
   }
 
-  const decided = (current: CheckpointRow): GateResult => {
+  const resolved = (current: CheckpointRow): GateResult => {
     const comment = current.decision_comment?.trim() || "(no comment)";
-    db.appendEvent({ runId: run.id, type: "gate_decided", summary: `Attorney ${current.status.replace("_", " ")} — ${params.title}`, detail: comment, payload: { checkpointId: checkpoint.id } });
+    if (current.status === "approved" || current.status === "changes_requested") {
+      db.appendEvent({ runId: run.id, type: "gate_decided", summary: `Attorney ${current.status.replace("_", " ")} — ${params.title}`, detail: comment, payload: { checkpointId: checkpoint.id } });
+    }
     return {
       content: [{ type: "text", text: `DECISION: ${current.status}\nCOMMENT: ${comment}` }],
       details: { checkpointId: checkpoint.id, status: current.status },
@@ -117,14 +119,18 @@ export async function attorneyGate(
       throw new Error("attorney_review interrupted");
     }
     const current = db.getCheckpoint(checkpoint.id);
-    if (current && current.status !== "pending") return decided(current);
+    if (current && current.status !== "pending") return resolved(current);
     if (Date.now() - startedAt > opts.maxWaitMs) {
       // Time out only this gate's checkpoint. Other agents in the run may be
       // waiting on their own approvals, and those stay pending and decidable.
-      if (!db.timeOutCheckpointIfPending(checkpoint.id, "No attorney decision was recorded in time.")) {
-        // The attorney decided between the last poll and the timeout: use it.
+      const timedOut = db.timeOutCheckpointIfPending(checkpoint.id, "No attorney decision was recorded in time.");
+      if (!timedOut) {
+        // Stop, the attorney, or another waiter resolved it between the last
+        // poll and our update. Return exactly that stored outcome; only the
+        // waiter whose update succeeded owns the timeout event below.
         const late = db.getCheckpoint(checkpoint.id);
-        if (late && (late.status === "approved" || late.status === "changes_requested")) return decided(late);
+        if (late && late.status !== "pending") return resolved(late);
+        throw new Error("attorney_review checkpoint could not be resolved");
       }
       db.appendEvent({ runId: run.id, type: "gate_timed_out", summary: `Attorney gate timed out — ${params.title}`, payload: { checkpointId: checkpoint.id } });
       return {
