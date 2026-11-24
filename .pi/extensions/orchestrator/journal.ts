@@ -146,14 +146,19 @@ export function stringMap(raw: unknown): Record<string, string> {
  * Top-level step index for a node path. A saved-workflow run's root is a
  * `workflow` node whose body is the sequence, so steps are `$.body.steps[i]`.
  * A resumed run is an inline sequence, so steps are `$.steps[k]` and map back
- * to the original index via the run's resume offset.
+ * to the original index via the run's resume offset. The first `rebinds`
+ * steps of a resumed flow are its `resume:*` value nodes, which re-bind steps
+ * that already have their completion journalled: they get no index at all.
  */
-function topLevelStepIndex(path: string | undefined, resumeOffset: number): number | undefined {
+export function topLevelStepIndex(path: string | undefined, resumeOffset: number, rebinds = 0): number | undefined {
   if (!path) return undefined;
   let m = /^\$\.body\.steps\[(\d+)\]$/.exec(path);
   if (m) return Number(m[1]);
   m = /^\$\.steps\[(\d+)\]$/.exec(path);
-  if (m) return Number(m[1]) + resumeOffset;
+  if (m) {
+    const k = Number(m[1]);
+    return k < rebinds ? undefined : k + resumeOffset;
+  }
   return undefined;
 }
 
@@ -212,7 +217,7 @@ export function buildResumeFlow(run: RunRow, completed: Map<number, unknown>, ov
   const remaining = steps.slice(resumeAt).map((st) => substituteParams(st, params));
   // In the rebuilt flow, `$.steps[k]` is original step `k - rebinds.length + resumeAt`.
   const resumeOffset = resumeAt - rebinds.length;
-  return { flow: { kind: "sequence", steps: [...rebinds, ...remaining] }, resumeAt, resumeOffset, display: run.display ?? undefined };
+  return { flow: { kind: "sequence", steps: [...rebinds, ...remaining] }, resumeAt, resumeOffset, rebinds: rebinds.length, display: run.display ?? undefined };
 }
 // ------------------------------------------------------------- liveness
 
@@ -279,7 +284,7 @@ export class Journal {
   /** Local run ids with a resume in flight in this Pi, reserved before the first await. */
   private readonly resuming = new Set<string>();
   /** Resumes whose `start` is in flight, by local run id, so each `run_created` lands on the run being resumed. */
-  private readonly pendingResumes = new Map<string, { runId: string; label: string; resumeOffset: number; attachedTo?: string }>();
+  private readonly pendingResumes = new Map<string, { runId: string; label: string; resumeOffset: number; rebinds: number; attachedTo?: string }>();
   /** pi-agents run ids whose run_completed has been seen, so a late `start` reply cannot revive them. */
   private readonly finishedPi = new Set<string>();
   readonly pid: number;
@@ -347,7 +352,7 @@ export class Journal {
       const pending = [...this.pendingResumes.values()].find((p) => !p.attachedTo && p.label === event.run!.label);
       if (pending) {
         pending.attachedTo = piRunId;
-        db.markResumed(pending.runId, piRunId, pending.resumeOffset, this.pid);
+        db.markResumed(pending.runId, piRunId, pending.resumeOffset, this.pid, pending.rebinds);
         this.piToLocal.set(piRunId, pending.runId);
         return db.getRun(pending.runId);
       }
@@ -410,32 +415,19 @@ export class Journal {
       label,
       detail: detail ?? (event.type === "node_session" ? event.sessionFile : undefined),
       value: event.type === "node_completed" ? event.value : undefined,
-      stepIndex: event.type === "node_completed" && !rebind ? topLevelStepIndex(event.path, run.resume_offset) : undefined,
+      stepIndex: event.type === "node_completed" && !rebind ? topLevelStepIndex(event.path, run.resume_offset, run.resume_rebinds ?? 0) : undefined,
     });
 
     if (event.type === "run_completed") {
       const header = this.headers.get(event.runId ?? "");
       const status = (event.status ?? "failed") as "completed" | "failed" | "stopped";
       const markdown = presentResult(event.value, header?.display);
-      db.markFinished(run.id, {
-        status,
-        error: event.error,
-        resultMarkdown: markdown,
-        resultJson: jsonText(event.value),
-        agents: event.agents,
-        at: event.at,
-      });
-      if (status === "completed") {
-        db.createCheckpoint({
-          id: randomUUID(),
-          runId: run.id,
-          kind: "final_review",
-          title: "Attorney review of final report",
-          summaryMarkdown: markdown,
-        });
-      } else {
-        db.cancelPendingCheckpoints(run.id, `Workflow ${status}.`);
-      }
+      // The finished mark and the final review (or the cancelled gates) land together.
+      db.finishRun(
+        run.id,
+        { status, error: event.error, resultMarkdown: markdown, resultJson: jsonText(event.value), agents: event.agents, at: event.at },
+        { checkpointId: randomUUID() },
+      );
       this.headers.delete(event.runId ?? "");
       if (event.runId) {
         this.piToLocal.delete(event.runId);
@@ -508,19 +500,19 @@ export class Journal {
 
   private async startResume(db: RunStore, row: RunRow, input: Record<string, unknown>): Promise<Reply> {
     const model = typeof input.model === "string" && input.model.trim() ? input.model.trim() : undefined;
-    const { flow, resumeAt, resumeOffset, display } = buildResumeFlow(row, db.completedStepValues(row.id), db.stepOverrides(row.id));
+    const { flow, resumeAt, resumeOffset, rebinds, display } = buildResumeFlow(row, db.completedStepValues(row.id), db.stepOverrides(row.id));
     const nth = row.resumes + 1;
     const suffix = nth % 100 >= 11 && nth % 100 <= 13 ? "th" : nth % 10 === 1 ? "st" : nth % 10 === 2 ? "nd" : nth % 10 === 3 ? "rd" : "th";
     db.appendEvent({ runId: row.id, type: "resume", summary: `Resuming from step ${resumeAt + 1} (${nth}${suffix} resume${model ? ` on ${model}` : ""})` });
     const label = `${row.title} (resumed)`;
-    const pending: { runId: string; label: string; resumeOffset: number; attachedTo?: string } = { runId: row.id, label, resumeOffset };
+    const pending: { runId: string; label: string; resumeOffset: number; rebinds: number; attachedTo?: string } = { runId: row.id, label, resumeOffset, rebinds };
     this.pendingResumes.set(row.id, pending);
     try {
       const started = await this.agents.start({ flow, label, display });
       // run_created normally arrives inside `start` and has already claimed the row.
       // A resume that already reported run_completed stays finished.
       if (!this.finishedPi.has(started.runId)) {
-        if (pending.attachedTo !== started.runId) db.markResumed(row.id, started.runId, resumeOffset, this.pid);
+        if (pending.attachedTo !== started.runId) db.markResumed(row.id, started.runId, resumeOffset, this.pid, rebinds);
         this.piToLocal.set(started.runId, row.id);
       }
       if (model) db.setModel(row.id, model);
