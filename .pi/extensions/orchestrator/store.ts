@@ -62,6 +62,8 @@ export interface RunRow {
   heartbeat_at: string | null;
   /** Null on rows written before the column existed. */
   origin: RunOrigin | null;
+  /** Opaque, short-lived reservation held while a Pi process starts a resume. */
+  resume_claim_token: string | null;
   created_at: string;
   started_at: string | null;
   completed_at: string | null;
@@ -214,6 +216,7 @@ const MIGRATIONS: Array<{ table: string; column: string; ddl: string }> = [
   { table: "runs", column: "heartbeat_at", ddl: "ALTER TABLE runs ADD COLUMN heartbeat_at TEXT" },
   { table: "runs", column: "origin", ddl: "ALTER TABLE runs ADD COLUMN origin TEXT" },
   { table: "runs", column: "resume_rebinds", ddl: "ALTER TABLE runs ADD COLUMN resume_rebinds INTEGER NOT NULL DEFAULT 0" },
+  { table: "runs", column: "resume_claim_token", ddl: "ALTER TABLE runs ADD COLUMN resume_claim_token TEXT" },
 ];
 
 function nowIso(at?: number): string {
@@ -453,12 +456,25 @@ export class RunStore {
     return new Map(rows.map((r) => [r.step_index, JSON.parse(r.value_json)]));
   }
 
+  /** Atomically reserve a stopped/failed run while pi-agents starts its resume. */
+  claimResume(id: string, token: string): boolean {
+    const result = this.db
+      .prepare("UPDATE runs SET resume_claim_token = ? WHERE id = ? AND resume_claim_token IS NULL AND status != 'completed'")
+      .run(token, id);
+    return result.changes === 1;
+  }
+
+  /** Release only the reservation made by this caller; another claim is never disturbed. */
+  releaseResumeClaim(id: string, token: string): void {
+    this.db.prepare("UPDATE runs SET resume_claim_token = NULL WHERE id = ? AND resume_claim_token = ?").run(id, token);
+  }
+
   markResumed(id: string, piRunId: string, resumeOffset: number, ownerPid?: number, rebinds = 0): void {
     const at = nowIso();
     this.db
       .prepare(
         `UPDATE runs SET pi_run_id = ?, status = 'running', error = NULL, completed_at = NULL, resume_offset = ?, resume_rebinds = ?,
-           resumes = resumes + 1, updated_at = ?, owner_pid = COALESCE(?, owner_pid), heartbeat_at = ? WHERE id = ?`,
+           resumes = resumes + 1, updated_at = ?, owner_pid = COALESCE(?, owner_pid), heartbeat_at = ?, resume_claim_token = NULL WHERE id = ?`,
       )
       .run(piRunId, resumeOffset, rebinds, at, ownerPid ?? null, at, id);
   }

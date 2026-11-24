@@ -517,7 +517,20 @@ export class Journal {
       const row = db.getRun(runId);
       if (!row) throw new Error(`unknown run '${runId}'`);
       if (row.status === "completed") throw new Error("run already completed");
-      return await this.startResume(db, row, input);
+      const claim = randomUUID();
+      if (!db.claimResume(runId, claim)) {
+        const latest = db.getRun(runId);
+        if (latest?.status === "completed") throw new Error("run already completed");
+        throw new Error("not resumed: another Pi is already resuming this run.");
+      }
+      try {
+        // Re-read after the atomic claim so flow inputs and the resume count match
+        // the row that this process actually reserved.
+        return await this.startResume(db, db.getRun(runId) ?? row, input);
+      } finally {
+        // markResumed clears a successful claim; failed starts are made retryable here.
+        db.releaseResumeClaim(runId, claim);
+      }
     } finally {
       this.resuming.delete(runId);
     }

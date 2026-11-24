@@ -254,6 +254,7 @@ final class RunStore: @unchecked Sendable {
         ("runs", "heartbeat_at", "ALTER TABLE runs ADD COLUMN heartbeat_at TEXT"),
         ("runs", "origin", "ALTER TABLE runs ADD COLUMN origin TEXT"),
         ("runs", "resume_rebinds", "ALTER TABLE runs ADD COLUMN resume_rebinds INTEGER NOT NULL DEFAULT 0"),
+        ("runs", "resume_claim_token", "ALTER TABLE runs ADD COLUMN resume_claim_token TEXT"),
     ]
 
     /// Applies `migrations` idempotently, in one write transaction so a Pi opening the
@@ -292,7 +293,7 @@ final class RunStore: @unchecked Sendable {
       result_markdown TEXT, result_json TEXT, agents INTEGER, created_at TEXT NOT NULL,
       started_at TEXT, completed_at TEXT, updated_at TEXT NOT NULL,
       flow_json TEXT, display TEXT, resume_offset INTEGER NOT NULL DEFAULT 0, resumes INTEGER NOT NULL DEFAULT 0,
-      owner_pid INTEGER, heartbeat_at TEXT, resume_rebinds INTEGER NOT NULL DEFAULT 0
+      owner_pid INTEGER, heartbeat_at TEXT, resume_rebinds INTEGER NOT NULL DEFAULT 0, resume_claim_token TEXT
     );
     CREATE INDEX IF NOT EXISTS runs_pi_run_id ON runs(pi_run_id);
     CREATE INDEX IF NOT EXISTS runs_created_at ON runs(created_at);
