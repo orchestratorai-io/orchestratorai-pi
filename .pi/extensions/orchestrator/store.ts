@@ -13,6 +13,8 @@ import * as path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 export const STORE_RELATIVE_PATH = "data/orchestrator.sqlite";
+/** Title of the attorney's final-review checkpoint (RunStore.swift uses the same). */
+export const FINAL_REVIEW_TITLE = "Attorney review of final report";
 
 export type RunStatus =
   | "queued"
@@ -51,6 +53,8 @@ export interface RunRow {
   flow_json: string | null;
   display: string | null;
   resume_offset: number;
+  /** How many `resume:*` value nodes lead the current resume flow (`$.steps[0..n-1]`); 0 if not resumed. */
+  resume_rebinds: number;
   resumes: number;
   /** Process id of the Pi that drives this run right now; null when none has claimed it. */
   owner_pid: number | null;
@@ -200,6 +204,7 @@ const MIGRATIONS: Array<{ table: string; column: string; ddl: string }> = [
   { table: "runs", column: "owner_pid", ddl: "ALTER TABLE runs ADD COLUMN owner_pid INTEGER" },
   { table: "runs", column: "heartbeat_at", ddl: "ALTER TABLE runs ADD COLUMN heartbeat_at TEXT" },
   { table: "runs", column: "origin", ddl: "ALTER TABLE runs ADD COLUMN origin TEXT" },
+  { table: "runs", column: "resume_rebinds", ddl: "ALTER TABLE runs ADD COLUMN resume_rebinds INTEGER NOT NULL DEFAULT 0" },
 ];
 
 function nowIso(at?: number): string {
@@ -228,15 +233,38 @@ export class RunStore {
     this.db.exec("PRAGMA busy_timeout = 5000;");
     this.db.exec("PRAGMA synchronous = NORMAL;");
     this.db.exec(SCHEMA);
-    for (const m of MIGRATIONS) {
-      const cols = this.db.prepare(`PRAGMA table_info(${m.table})`).all() as Array<{ name: string }>;
-      if (cols.some((c) => c.name === m.column)) continue;
-      try {
-        this.db.exec(m.ddl);
-      } catch (error) {
-        // The app (RunStore.swift) or another Pi may have added it in the meantime.
-        if (!/duplicate column/i.test(String(error))) throw error;
+    // One write transaction for the check-then-ALTER loop: two Pis (or a parallel
+    // child) opening the store at once take turns instead of racing on a column.
+    this.transaction(() => {
+      for (const m of MIGRATIONS) {
+        const cols = this.db.prepare(`PRAGMA table_info(${m.table})`).all() as Array<{ name: string }>;
+        if (cols.some((c) => c.name === m.column)) continue;
+        try {
+          this.db.exec(m.ddl);
+        } catch (error) {
+          // The app (RunStore.swift) may have added it in the meantime.
+          if (!/duplicate column/i.test(String(error))) throw error;
+        }
       }
+    });
+  }
+
+  /**
+   * Runs `fn` inside BEGIN IMMEDIATE ... COMMIT, rolling back if it throws.
+   * IMMEDIATE takes the write lock up front, so a read-modify-write in `fn`
+   * cannot interleave with another connection's (busy_timeout makes the other
+   * side wait). A call made inside an open transaction just joins it.
+   */
+  transaction<T>(fn: () => T): T {
+    if (this.db.isTransaction) return fn();
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const result = fn();
+      this.db.exec("COMMIT");
+      return result;
+    } catch (error) {
+      if (this.db.isTransaction) this.db.exec("ROLLBACK");
+      throw error;
     }
   }
 
@@ -364,6 +392,34 @@ export class RunStore {
       );
   }
 
+  /**
+   * The end of a run, as one transaction: the finished mark plus, for a completed
+   * run, its pending final_review checkpoint (or, for a failed/stopped run, the
+   * cancelling of its still-open gates). Written separately, a crash in between
+   * left a completed run with no final review: "Awaiting attorney review" forever,
+   * with nothing to approve.
+   */
+  finishRun(
+    id: string,
+    input: Parameters<RunStore["markFinished"]>[1],
+    finalReview: { checkpointId: string; title?: string },
+  ): void {
+    this.transaction(() => {
+      this.markFinished(id, input);
+      if (input.status === "completed") {
+        this.createCheckpoint({
+          id: finalReview.checkpointId,
+          runId: id,
+          kind: "final_review",
+          title: finalReview.title ?? FINAL_REVIEW_TITLE,
+          summaryMarkdown: input.resultMarkdown,
+        });
+      } else {
+        this.cancelPendingCheckpoints(id, `Workflow ${input.status}.`);
+      }
+    });
+  }
+
   /** Persist the expanded flow and display path so the run can be resumed later. */
   setFlow(id: string, flow: unknown, display: string | undefined): void {
     this.db
@@ -388,14 +444,14 @@ export class RunStore {
     return new Map(rows.map((r) => [r.step_index, JSON.parse(r.value_json)]));
   }
 
-  markResumed(id: string, piRunId: string, resumeOffset: number, ownerPid?: number): void {
+  markResumed(id: string, piRunId: string, resumeOffset: number, ownerPid?: number, rebinds = 0): void {
     const at = nowIso();
     this.db
       .prepare(
-        `UPDATE runs SET pi_run_id = ?, status = 'running', error = NULL, completed_at = NULL, resume_offset = ?, resumes = resumes + 1,
-           updated_at = ?, owner_pid = COALESCE(?, owner_pid), heartbeat_at = ? WHERE id = ?`,
+        `UPDATE runs SET pi_run_id = ?, status = 'running', error = NULL, completed_at = NULL, resume_offset = ?, resume_rebinds = ?,
+           resumes = resumes + 1, updated_at = ?, owner_pid = COALESCE(?, owner_pid), heartbeat_at = ? WHERE id = ?`,
       )
-      .run(piRunId, resumeOffset, at, ownerPid ?? null, at, id);
+      .run(piRunId, resumeOffset, rebinds, at, ownerPid ?? null, at, id);
   }
 
   // ------------------------------------------------------------- progress
@@ -424,6 +480,12 @@ export class RunStore {
    * The reducer is fixed on first write for a key; later writes must agree.
    */
   updateState(runId: string, key: string, reducer: "set" | "append" | "merge", incoming: unknown): { value: unknown; version: number } {
+    // Parallel agents each write through their own connection: read, reduce and write
+    // under one write lock, or two appends both read the old list and one is lost.
+    return this.transaction(() => this.updateStateLocked(runId, key, reducer, incoming));
+  }
+
+  private updateStateLocked(runId: string, key: string, reducer: "set" | "append" | "merge", incoming: unknown): { value: unknown; version: number } {
     const row = this.db
       .prepare("SELECT value_json, reducer, version FROM run_state WHERE run_id = ? AND key = ?")
       .get(runId, key) as { value_json: string; reducer: string; version: number } | undefined;

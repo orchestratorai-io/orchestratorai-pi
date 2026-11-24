@@ -903,6 +903,26 @@ struct ContentView: View {
                         }
                         .padding(8)
                     }
+                } else if FinalReviewControl.choose(state: state, checkpoints: runner.checkpoints(for: run.id)) == .start {
+                    // Completed, but no final review is waiting (it was never written, or the
+                    // last one was cancelled). Without this the run sat in Needs attention
+                    // with nothing to press.
+                    GroupBox {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Label("Final review not started", systemImage: "person.badge.key")
+                                .font(.headline)
+                            Text("This run finished, but no attorney review was opened for it. Start one to approve the report or request changes.")
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                            Button("Start final review") {
+                                runner.reopenReview(runId: run.id)
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .accessibilityIdentifier("review.start")
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(8)
+                    }
                 } else if state == .approved || state == .changesRequested {
                     GroupBox {
                         VStack(alignment: .leading, spacing: 10) {

@@ -328,7 +328,10 @@ final class PiRunner: ObservableObject {
     func stop() {
         if let activeRunId, process?.isRunning == true {
             send(["type": "prompt", "message": "/orchestrator stop {\"runId\":\"\(activeRunId)\"}"])
-            store?.markOrphaned(runId: activeRunId, message: "Stopped by the user.")
+            // Pi is ended on the next line, before it can act on the stop command, so the
+            // app itself marks the run stopped and cancels its waiting gates. Otherwise a
+            // stopped run kept a pending gate card nobody could ever answer.
+            store?.markStoppedByUser(runId: activeRunId)
         }
         finishActiveProcess()
         activeRunId = nil
@@ -341,7 +344,7 @@ final class PiRunner: ObservableObject {
         launchWatchdog = nil
         outputPipe?.fileHandleForReading.readabilityHandler = nil
         if let process, process.isRunning {
-            terminateDirectChildren(of: process.processIdentifier)
+            ProcessTree.terminate(pid: process.processIdentifier)
             process.terminate()
         }
         process = nil
@@ -350,13 +353,6 @@ final class PiRunner: ObservableObject {
         isRunning = false
     }
 
-    private func terminateDirectChildren(of pid: Int32) {
-        let killer = Process()
-        killer.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
-        killer.arguments = ["-TERM", "-P", String(pid)]
-        try? killer.run()
-        killer.waitUntilExit()
-    }
 
     // MARK: Attorney decisions
 
@@ -474,5 +470,33 @@ final class PiRunner: ObservableObject {
             }
             return lines
         }
+    }
+}
+
+/// Ends a Pi process and everything it started. Pi's delegated agents are its
+/// children, and they start processes of their own; killing only Pi's direct
+/// children (the old `pkill -P`) left those grandchildren running. Foundation's
+/// `Process` starts Pi as the leader of its own process group, so signalling the
+/// group reaches every descendant that did not leave it; direct children that did
+/// are signalled as before.
+enum ProcessTree {
+    /// Whether `pid` leads a process group of its own that is not the app's
+    /// (signalling the app's own group would end the app).
+    nonisolated static func ownsGroup(pid: Int32) -> Bool {
+        guard pid > 0 else { return false }
+        let group = getpgid(pid)
+        return group == pid && group != getpgrp()
+    }
+
+    nonisolated static func terminate(pid: Int32, signal: Int32 = SIGTERM) {
+        guard pid > 0 else { return }
+        // The group first, while Pi is certainly alive: once its children die it may
+        // exit and be reaped, and then its group can no longer be looked up.
+        if ownsGroup(pid: pid) { killpg(pid, signal) }
+        let killer = Process()
+        killer.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
+        killer.arguments = ["-\(signal)", "-P", String(pid)]
+        try? killer.run()
+        killer.waitUntilExit()
     }
 }

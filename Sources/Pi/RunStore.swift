@@ -167,6 +167,25 @@ enum ReviewState: Hashable {
     }
 }
 
+/// What the human-review card offers when no final-review card is pending.
+enum FinalReviewControl: Equatable {
+    case none
+    /// The run completed but has no pending final review (it was never created, or
+    /// the last one was cancelled): without this it sat in Needs attention with no buttons.
+    case start
+    /// The attorney decided; they may reopen it.
+    case reopen
+
+    static func choose(state: ReviewState, checkpoints: [CheckpointRecord]) -> FinalReviewControl {
+        if checkpoints.contains(where: { $0.kind == "final_review" && $0.isPending }) { return .none }
+        switch state {
+        case .awaitingReview: return .start
+        case .approved, .changesRequested: return .reopen
+        default: return .none
+        }
+    }
+}
+
 final class RunStore {
     private var db: OpaquePointer?
     let path: String
@@ -185,6 +204,7 @@ final class RunStore {
         // before Pi has opened an older store. Fails harmlessly when the column exists.
         exec("ALTER TABLE runs ADD COLUMN owner_pid INTEGER;")
         exec("ALTER TABLE runs ADD COLUMN heartbeat_at TEXT;")
+        exec("ALTER TABLE runs ADD COLUMN resume_rebinds INTEGER NOT NULL DEFAULT 0;")
     }
 
     deinit {
@@ -199,7 +219,7 @@ final class RunStore {
       result_markdown TEXT, result_json TEXT, agents INTEGER, created_at TEXT NOT NULL,
       started_at TEXT, completed_at TEXT, updated_at TEXT NOT NULL,
       flow_json TEXT, display TEXT, resume_offset INTEGER NOT NULL DEFAULT 0, resumes INTEGER NOT NULL DEFAULT 0,
-      owner_pid INTEGER, heartbeat_at TEXT
+      owner_pid INTEGER, heartbeat_at TEXT, resume_rebinds INTEGER NOT NULL DEFAULT 0
     );
     CREATE INDEX IF NOT EXISTS runs_pi_run_id ON runs(pi_run_id);
     CREATE INDEX IF NOT EXISTS runs_created_at ON runs(created_at);
@@ -338,14 +358,22 @@ final class RunStore {
         )
     }
 
-    /// Lets the attorney re-open a completed report for a fresh decision.
+    /// Opens a fresh final review of a completed run: "Reopen for review" after a
+    /// decision, or "Start final review" when the run finished without one (see
+    /// `FinalReviewControl`). The report is copied in as the card's summary, and
+    /// nothing is added while a final review is already pending.
     @discardableResult
     func reopenFinalReview(runId: String) -> Bool {
         let now = ISO8601DateFormatter().string(from: Date())
         return execute(
-            "INSERT INTO checkpoints (id, run_id, kind, title, summary_markdown, status, requested_at) VALUES (?, ?, 'final_review', 'Attorney review of final report', NULL, 'pending', ?)",
-            bind: [UUID().uuidString.lowercased(), runId, now]
-        )
+            """
+            INSERT INTO checkpoints (id, run_id, kind, title, summary_markdown, status, requested_at)
+            SELECT ?, id, 'final_review', 'Attorney review of final report', result_markdown, 'pending', ?
+            FROM runs WHERE id = ? AND status = 'completed'
+              AND NOT EXISTS (SELECT 1 FROM checkpoints WHERE run_id = ? AND kind = 'final_review' AND status = 'pending')
+            """,
+            bind: [UUID().uuidString.lowercased(), now, runId, runId]
+        ) && changes() > 0
     }
 
     /// The session files of a run's delegated agents, as journaled in its node_session events.
@@ -388,6 +416,29 @@ final class RunStore {
         )
     }
 
+    /// The attorney pressed Stop: the run is stopped and its waiting gates are
+    /// cancelled, in one transaction. Done here rather than left to the extension's
+    /// `/orchestrator stop`, because the app ends the Pi process right after asking
+    /// and that reply may never come. (`markOrphaned`, for a Pi that died, keeps
+    /// gates pending on purpose so a resume picks them back up.)
+    @discardableResult
+    func markStoppedByUser(runId: String, message: String = "Stopped by the user.") -> Bool {
+        exec("BEGIN IMMEDIATE;")
+        let ok = markOrphaned(runId: runId, message: message)
+            && cancelPendingCheckpoints(runId: runId, reason: message)
+        exec(ok ? "COMMIT;" : "ROLLBACK;")
+        return ok
+    }
+
+    @discardableResult
+    func cancelPendingCheckpoints(runId: String, reason: String) -> Bool {
+        let now = ISO8601DateFormatter().string(from: Date())
+        return execute(
+            "UPDATE checkpoints SET status = 'cancelled', decision_comment = ?, decided_at = ? WHERE run_id = ? AND status = 'pending'",
+            bind: [reason, now, runId]
+        )
+    }
+
     // MARK: Live text
 
     struct LiveText: Identifiable, Hashable {
@@ -427,33 +478,56 @@ final class RunStore {
         var id: Int { stepIndex }
     }
 
+    /// Each completed step as resume will use it: an attorney's saved edit
+    /// (`step_overrides.value_json`) is shown in place of the stored output, so the
+    /// card and a re-opened edit sheet start from the edit, not the original.
     func stepOutputs(runId: String) -> [StepOutput] {
-        let overrides = Set(query("SELECT step_index FROM step_overrides WHERE run_id = ?", bind: [runId]) { Int(sqlite3_column_int64($0, 0)) })
+        var overrides: [Int: String] = [:]
+        let saved: [(Int, String)] = query("SELECT step_index, value_json FROM step_overrides WHERE run_id = ?", bind: [runId]) { stmt in
+            (Int(sqlite3_column_int64(stmt, 0)), Self.text(stmt, 1) ?? "")
+        }
+        for (index, json) in saved { overrides[index] = json }
         return query(
             "SELECT step_index, label, value_json FROM run_events WHERE run_id = ? AND type = 'node_completed' AND step_index IS NOT NULL ORDER BY seq",
             bind: [runId]
         ) { stmt in
             let index = Int(sqlite3_column_int64(stmt, 0))
-            let raw = Self.text(stmt, 2) ?? ""
-            // Show strings as themselves, anything else as pretty JSON.
-            let shown: String
-            if let data = raw.data(using: .utf8), let obj = try? JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed]) {
-                if let str = obj as? String { shown = str }
-                else if let pretty = try? JSONSerialization.data(withJSONObject: obj, options: [.prettyPrinted, .sortedKeys]) { shown = String(data: pretty, encoding: .utf8) ?? raw }
-                else { shown = raw }
-            } else { shown = raw }
-            return StepOutput(stepIndex: index, label: Self.text(stmt, 1) ?? "step \(index + 1)", valueText: shown, isOverridden: overrides.contains(index))
+            let raw = overrides[index] ?? Self.text(stmt, 2) ?? ""
+            return StepOutput(stepIndex: index, label: Self.text(stmt, 1) ?? "step \(index + 1)", valueText: Self.displayText(json: raw), isOverridden: overrides[index] != nil)
         }
         .reduce(into: [Int: StepOutput]()) { $0[$1.stepIndex] = $1 }   // latest completion per step wins
         .values.sorted { $0.stepIndex < $1.stepIndex }
     }
 
+    /// A stored JSON value as the step card shows it: strings as themselves, anything else as pretty JSON.
+    static func displayText(json raw: String) -> String {
+        guard let obj = try? JSONSerialization.jsonObject(with: Data(raw.utf8), options: [.fragmentsAllowed]) else { return raw }
+        if let str = obj as? String { return str }
+        guard let pretty = try? JSONSerialization.data(withJSONObject: obj, options: [.prettyPrinted, .sortedKeys]) else { return raw }
+        return String(data: pretty, encoding: .utf8) ?? raw
+    }
+
+    /// The JSON an edited step output is saved as. Text that parses as a JSON object
+    /// or array is saved as that structure, because later steps read fields of it
+    /// (`{inventory.items}`, `map.over`, `switch`) and a quoted string breaks them.
+    /// Anything else, including bare numbers and `true`, stays the attorney's text.
+    static func overrideJSON(for text: String) -> String? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.hasPrefix("{") || trimmed.hasPrefix("[") {
+            if let obj = try? JSONSerialization.jsonObject(with: Data(trimmed.utf8)),
+               obj is [String: Any] || obj is [Any],
+               let data = try? JSONSerialization.data(withJSONObject: obj, options: [.sortedKeys]) {
+                return String(data: data, encoding: .utf8)
+            }
+        }
+        guard let data = try? JSONSerialization.data(withJSONObject: text, options: [.fragmentsAllowed]) else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
     /// Attorney edit of a completed step's output; resume uses it instead of the stored value.
     @discardableResult
     func setStepOverride(runId: String, stepIndex: Int, text: String, note: String?) -> Bool {
-        // Store the edited text as a JSON string so the extension can re-bind it as-is.
-        guard let data = try? JSONSerialization.data(withJSONObject: text, options: [.fragmentsAllowed]),
-              let json = String(data: data, encoding: .utf8) else { return false }
+        guard let json = Self.overrideJSON(for: text) else { return false }
         let now = ISO8601DateFormatter().string(from: Date())
         return execute(
             "INSERT OR REPLACE INTO step_overrides (run_id, step_index, value_json, note, at) VALUES (?, ?, ?, ?, ?)",
@@ -470,6 +544,11 @@ final class RunStore {
 
     private func exec(_ sql: String) {
         sqlite3_exec(db, sql, nil, nil, nil)
+    }
+
+    /// Rows changed by the last statement on this connection.
+    private func changes() -> Int {
+        Int(sqlite3_changes(db))
     }
 
     private func execute(_ sql: String, bind: [String?]) -> Bool {
