@@ -169,7 +169,7 @@ struct ContentView: View {
             }
             Button("Cancel", role: .cancel) { }
         } message: {
-            Text("This permanently removes the run, its journal, and its attorney checkpoints from the on-device store.\n\n\(runPendingDeletion?.title ?? "This run")")
+            Text("This permanently removes the run and everything stored with it on this Mac: its journal, attorney checkpoints, edits, live agent text and agent session files.\n\n\(runPendingDeletion?.title ?? "This run")")
         }
         .alert("Clear approved runs?", isPresented: $showingClearApprovedConfirmation) {
             Button("Delete \(runsPendingClear.count) Approved", role: .destructive) {
@@ -178,7 +178,7 @@ struct ContentView: View {
             }
             Button("Cancel", role: .cancel) { runsPendingClear = [] }
         } message: {
-            Text("This permanently removes \(runsPendingClear.count) approved run\(runsPendingClear.count == 1 ? "" : "s") in this list, with their journals and attorney checkpoints, from the on-device store.")
+            Text("This permanently removes \(runsPendingClear.count) approved run\(runsPendingClear.count == 1 ? "" : "s") in this list, and everything stored with them on this Mac (journals, attorney checkpoints, edits, live agent text and agent session files).")
         }
     }
 

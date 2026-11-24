@@ -380,7 +380,9 @@ final class PiRunner: ObservableObject {
 
     func deleteRun(_ run: RunRecord) {
         if run.id == activeRunId { stop() }
-        store?.deleteRun(id: run.id)
+        // Collect the session files before the journal that names them is deleted.
+        let files = store?.sessionFiles(runId: run.id) ?? []
+        if store?.deleteRun(id: run.id) == true { SessionFiles.remove(files) }
         if selectedRunId == run.id { selectedRunId = nil }
         refresh()
     }
