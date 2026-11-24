@@ -8,6 +8,39 @@ struct AttorneyReviewItem: Identifiable, Hashable {
     let id: String
     let text: String
     let severity: String?
+    /// The report already had it ticked (`- [x]`).
+    var checkedInReport = false
+
+    /// Which items show as reviewed: the attorney's saved tick or untick
+    /// (`review_checks`) where there is one, otherwise what the report said.
+    static func reviewedIDs(_ items: [AttorneyReviewItem], saved: [String: Bool]) -> Set<String> {
+        Set(items.filter { saved[$0.id] ?? $0.checkedInReport }.map(\.id))
+    }
+}
+
+/// What the launch card's source box shows for the chosen file or folder.
+enum SourcePreview: Equatable {
+    case text(String)
+    /// A folder's visible entries, sorted, subfolders ending in "/"; `more` counts those not listed.
+    case folder(entries: [String], more: Int)
+    case unreadable
+
+    static func load(_ url: URL, maxEntries: Int = 200) -> SourcePreview {
+        var isDirectory: ObjCBool = false
+        if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue {
+            let urls = (try? FileManager.default.contentsOfDirectory(
+                at: url, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]
+            )) ?? []
+            let names = urls.map { entry in
+                let folder = (try? entry.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true
+                return entry.lastPathComponent + (folder ? "/" : "")
+            }
+            .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+            return .folder(entries: Array(names.prefix(maxEntries)), more: max(0, names.count - maxEntries))
+        }
+        if let text = try? String(contentsOf: url, encoding: .utf8) { return .text(text) }
+        return .unreadable
+    }
 }
 
 @main
@@ -34,7 +67,6 @@ struct ContentView: View {
     @State private var model = ContentView.defaultModel
     @State private var selectedWorkflow = "contract-review"
     @State private var showingActivity = false
-    @State private var reviewedIssueIDs: Set<String> = []
     @State private var reviewDecisionComment = ""
     @State private var gateDecisionComment = ""
     @State private var runPendingDeletion: RunRecord?
@@ -48,15 +80,13 @@ struct ContentView: View {
     @State private var workflows: [WorkflowDefinition] = []
 
     private var activeWorkflow: WorkflowDefinition? {
-        workflows.first(where: { $0.id == selectedWorkflow })
-            ?? workflows.first(where: { $0.id == "contract-review" })
-            ?? workflows.first
+        DetailSelection.activeWorkflow(selected: selectedWorkflow, openRun: runner.selectedRun, in: workflows)
     }
 
-    /// The run shown in the detail pane: the selected run when it belongs to the active workflow.
+    /// The run shown in the detail pane: the selected run when it belongs to the selected
+    /// workflow, including a run whose workflow has no catalog entry (an `inline` TUI run).
     private var displayedRun: RunRecord? {
-        guard let run = runner.selectedRun, run.workflow == activeWorkflow?.id else { return nil }
-        return run
+        DetailSelection.displayedRun(runner.selectedRun, selectedWorkflow: selectedWorkflow, activeWorkflow: activeWorkflow)
     }
 
     private var displayedState: ReviewState? {
@@ -100,7 +130,7 @@ struct ContentView: View {
                             if !projectTrusted { trustCard }
                             if runner.storeUnavailable { storeCard }
                             taskCard
-                            if let workflow = activeWorkflow, workflow.isReady || displayedRun != nil {
+                            if activeWorkflow?.isReady == true || displayedRun != nil {
                                 contextCard
                                 sourceDocumentCard
                                 gateCard
@@ -121,12 +151,16 @@ struct ContentView: View {
         .onAppear {
             reloadProject()
             runner.attach(projectDirectory: projectDirectory)
-            if let run = runner.selectedRun, workflows.contains(where: { $0.id == run.workflow }) {
+            if let run = runner.selectedRun {
                 selectedWorkflow = run.workflow
+                // attach() opened the newest run; fill its model as openRun does, or Resume on it
+                // would quietly switch to the default model.
+                model = ResumeModel.boxValue(opening: run, current: model)
             } else if let firstReady = workflows.first(where: \.isReady) {
                 selectedWorkflow = firstReady.id
             }
-            sidebarSelection = .workflow(selectedWorkflow)
+            // A run whose workflow has no catalog row (an `inline` TUI run) opens under Inbox.
+            sidebarSelection = workflows.contains(where: { $0.id == selectedWorkflow }) ? .workflow(selectedWorkflow) : .inbox
             resetParams()
         }
         .onChange(of: sidebarSelection) { _, newValue in
@@ -136,14 +170,15 @@ struct ContentView: View {
             }
         }
         .onChange(of: selectedWorkflow) { _, _ in
-            reviewedIssueIDs = []
+            // Switching into the run that is already open (openRun sets the workflow, then this
+            // fires later) keeps the params openRun filled in from the run; anything else is a
+            // fresh launch card for the new workflow.
+            guard !DetailSelection.isOpening(runner.selectedRun, workflow: selectedWorkflow) else { return }
             reviewDecisionComment = ""
             gateDecisionComment = ""
+            selectedFile = nil
+            runner.select(runId: nil)
             resetParams()
-            if runner.selectedRun?.workflow != selectedWorkflow {
-                selectedFile = nil
-                runner.select(runId: nil)
-            }
         }
         .fileImporter(
             isPresented: $showingImporter,
@@ -169,7 +204,7 @@ struct ContentView: View {
             }
             Button("Cancel", role: .cancel) { }
         } message: {
-            Text("This permanently removes the run, its journal, and its attorney checkpoints from the on-device store.\n\n\(runPendingDeletion?.title ?? "This run")")
+            Text("This permanently removes the run and everything stored with it on this Mac: its journal, attorney checkpoints, edits, live agent text and agent session files.\n\n\(runPendingDeletion?.title ?? "This run")")
         }
         .alert("Clear approved runs?", isPresented: $showingClearApprovedConfirmation) {
             Button("Delete \(runsPendingClear.count) Approved", role: .destructive) {
@@ -178,18 +213,22 @@ struct ContentView: View {
             }
             Button("Cancel", role: .cancel) { runsPendingClear = [] }
         } message: {
-            Text("This permanently removes \(runsPendingClear.count) approved run\(runsPendingClear.count == 1 ? "" : "s") in this list, with their journals and attorney checkpoints, from the on-device store.")
+            Text("This permanently removes \(runsPendingClear.count) approved run\(runsPendingClear.count == 1 ? "" : "s") in this list, and everything stored with them on this Mac (journals, attorney checkpoints, edits, live agent text and agent session files).")
         }
     }
 
     private func reloadProject() {
         projectDirectory = PiEnvironment.findProjectDirectory()
+        let seenGroups = Set(workflows.map(\.groupId))
         workflows = LegalWorkflowCatalog.workflows(projectDirectory: projectDirectory)
+        // A group only a user's own workflow names starts expanded, like Legal's five.
+        expandedGroups.formUnion(Set(workflows.map(\.groupId)).subtracting(seenGroups).subtracting(LegalWorkflowCatalog.groups.map(\.id)))
         projectTrusted = PiEnvironment.isProjectTrusted(projectDirectory)
     }
 
+    /// The launch fields for the active workflow; while a run is open, its saved params.
     private func resetParams() {
-        paramValues = activeWorkflow?.launch?.initialValues() ?? [:]
+        paramValues = activeWorkflow?.launch?.values(opening: displayedRun) ?? displayedRun?.params ?? [:]
     }
 
     // MARK: Selection
@@ -214,7 +253,6 @@ struct ContentView: View {
 
     /// "New run" in the list: drop the open run so the detail shows the bare launch card.
     private func startNewRun() {
-        reviewedIssueIDs = []
         reviewDecisionComment = ""
         gateDecisionComment = ""
         selectedFile = nil
@@ -223,7 +261,6 @@ struct ContentView: View {
     }
 
     private func openRun(_ run: RunRecord) {
-        reviewedIssueIDs = []
         reviewDecisionComment = ""
         gateDecisionComment = ""
         selectedWorkflow = run.workflow
@@ -233,11 +270,10 @@ struct ContentView: View {
         } else {
             selectedFile = nil
         }
-        paramValues.merge(run.params) { _, stored in stored }
+        // The run's saved params over the defaults of its own workflow (not the one shown before).
+        resetParams()
         // Show the run's own model, so Resume runs on it unless the attorney types another.
-        if let runModel = run.model, !runModel.trimmingCharacters(in: .whitespaces).isEmpty {
-            model = runModel
-        }
+        model = ResumeModel.boxValue(opening: run, current: model)
     }
 
     // MARK: Header and setup cards
@@ -250,7 +286,7 @@ struct ContentView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Pi - try OrchestratorAI Legal on your Mac")
                     .font(.title2.weight(.semibold))
-                Text(activeWorkflow?.title ?? "Workflows")
+                Text(activeWorkflow?.title ?? displayedRun?.workflow ?? "Workflows")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
@@ -341,6 +377,11 @@ struct ContentView: View {
                     } else {
                         notInstalled(workflow: workflow)
                     }
+                } else if let run = displayedRun {
+                    Label("Workflow \u{201C}\(run.workflow)\u{201D}", systemImage: "doc.text")
+                        .font(.title3.weight(.semibold))
+                    Text("This run's workflow is not in this Mac's workflow list (runs started in the Pi terminal are recorded as \u{201C}inline\u{201D}). You can review the run here, but a new one cannot be started from this card.")
+                        .foregroundStyle(.secondary)
                 } else {
                     Text("No workflows found in \(projectDirectory.appendingPathComponent(".pi/workflows").path)")
                         .foregroundStyle(.secondary)
@@ -350,14 +391,9 @@ struct ContentView: View {
         }
     }
 
-    /// Start is allowed once the input the launch block asks for is present.
+    /// Start is allowed once the input the launch block asks for is present and every required field is filled.
     private func canStart(_ launch: WorkflowLaunchSpec) -> Bool {
-        switch launch.inputKind {
-        case .file, .folder:
-            return selectedFile != nil
-        case .none:
-            return launch.requiredFieldParams.allSatisfy { !(paramValues[$0] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-        }
+        launch.canStart(hasInput: selectedFile != nil, values: paramValues)
     }
 
     @ViewBuilder
@@ -543,7 +579,6 @@ struct ContentView: View {
             params[launch.fileParam] = selectedFile.path
             source = selectedFile.path
         }
-        reviewedIssueIDs = []
         reviewDecisionComment = ""
         gateDecisionComment = ""
         runner.start(workflow: workflow, params: params, sourceDocument: source, model: model)
@@ -635,6 +670,7 @@ struct ContentView: View {
     private var attorneyReviewItems: [AttorneyReviewItem] {
         Self.parseAttorneyItems(from: finalMarkdown)
     }
+
 
     private var resultCard: some View {
         GroupBox {
@@ -735,7 +771,9 @@ struct ContentView: View {
 
     private var attorneyReviewCard: some View {
         let items = attorneyReviewItems
-        let reviewedCount = reviewedIssueIDs.intersection(Set(items.map(\.id))).count
+        // Ticks are saved in the store per run, so they survive opening another run or quitting.
+        let reviewedIssueIDs = AttorneyReviewItem.reviewedIDs(items, saved: runner.reviewChecks)
+        let reviewedCount = reviewedIssueIDs.count
         let copy = activeWorkflow?.launch?.review ?? LaunchReviewCopy()
         return GroupBox {
             VStack(alignment: .leading, spacing: 12) {
@@ -781,10 +819,8 @@ struct ContentView: View {
                     VStack(alignment: .leading, spacing: 8) {
                         ForEach(items) { item in
                             Button {
-                                if reviewedIssueIDs.contains(item.id) {
-                                    reviewedIssueIDs.remove(item.id)
-                                } else {
-                                    reviewedIssueIDs.insert(item.id)
+                                if let run = displayedRun {
+                                    runner.setReviewed(runId: run.id, itemId: item.id, reviewed: !reviewedIssueIDs.contains(item.id))
                                 }
                             } label: {
                                 HStack(alignment: .top, spacing: 8) {
@@ -826,7 +862,9 @@ struct ContentView: View {
 
     private var humanReviewCard: some View {
         let items = attorneyReviewItems
-        let reviewedCount = reviewedIssueIDs.intersection(Set(items.map(\.id))).count
+        // Ticks are saved in the store per run, so they survive opening another run or quitting.
+        let reviewedIssueIDs = AttorneyReviewItem.reviewedIDs(items, saved: runner.reviewChecks)
+        let reviewedCount = reviewedIssueIDs.count
         let allReviewed = items.isEmpty || reviewedCount == items.count
         let copy = activeWorkflow?.launch?.review ?? LaunchReviewCopy()
 
@@ -902,6 +940,26 @@ struct ContentView: View {
                         }
                         .padding(8)
                     }
+                } else if FinalReviewControl.choose(state: state, checkpoints: runner.checkpoints(for: run.id)) == .start {
+                    // Completed, but no final review is waiting (it was never written, or the
+                    // last one was cancelled). Without this the run sat in Needs attention
+                    // with nothing to press.
+                    GroupBox {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Label("Final review not started", systemImage: "person.badge.key")
+                                .font(.headline)
+                            Text("This run finished, but no attorney review was opened for it. Start one to approve the report or request changes.")
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                            Button("Start final review") {
+                                runner.reopenReview(runId: run.id)
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .accessibilityIdentifier("review.start")
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(8)
+                    }
                 } else if state == .approved || state == .changesRequested {
                     GroupBox {
                         VStack(alignment: .leading, spacing: 10) {
@@ -909,10 +967,10 @@ struct ContentView: View {
                                 .font(.headline)
                             ForEach(runner.checkpoints(for: run.id).filter { !$0.isPending }) { checkpoint in
                                 HStack(alignment: .top, spacing: 8) {
-                                    Image(systemName: checkpoint.isGate ? "hand.raised" : "person.badge.key")
-                                        .foregroundStyle(.secondary)
+                                    Image(systemName: checkpoint.isTimedOut ? "clock.badge.exclamationmark" : checkpoint.isGate ? "hand.raised" : "person.badge.key")
+                                        .foregroundStyle(checkpoint.isTimedOut ? .orange : .secondary)
                                     VStack(alignment: .leading, spacing: 2) {
-                                        Text("\(checkpoint.title) — \(checkpoint.status.replacingOccurrences(of: "_", with: " "))")
+                                        Text("\(checkpoint.title) — \(checkpoint.statusLabel)")
                                             .font(.caption.weight(.semibold))
                                         if let comment = checkpoint.decisionComment, !comment.isEmpty {
                                             Text(comment)
@@ -950,8 +1008,8 @@ struct ContentView: View {
     private var sourceDocumentBox: some View {
         GroupBox {
             DisclosureGroup {
-                if let selectedFile,
-                   let source = try? String(contentsOf: selectedFile, encoding: .utf8) {
+                switch selectedFile.map({ SourcePreview.load($0) }) {
+                case .text(let source):
                     ScrollView {
                         Text(source)
                             .font(.system(.body, design: .serif))
@@ -962,7 +1020,30 @@ struct ContentView: View {
                     .frame(minHeight: 120, maxHeight: 300)
                     .background(Color(nsColor: .textBackgroundColor))
                     .clipShape(RoundedRectangle(cornerRadius: 8))
-                } else {
+                case .folder(let entries, let more):
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 3) {
+                            if entries.isEmpty {
+                                Text("This folder is empty.")
+                                    .foregroundStyle(.secondary)
+                            }
+                            ForEach(entries, id: \.self) { name in
+                                Label(name, systemImage: name.hasSuffix("/") ? "folder" : "doc")
+                            }
+                            if more > 0 {
+                                Text("… and \(more) more")
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .font(.callout)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(14)
+                    }
+                    .frame(minHeight: 120, maxHeight: 300)
+                    .background(Color(nsColor: .textBackgroundColor))
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                case .unreadable, nil:
                     Text(selectedFile == nil
                          ? "Choose a readable text or Markdown \(activeWorkflow?.fileLabel ?? "document") to preview it here."
                          : "This file could not be previewed as UTF-8 text (binary/PDF previews are not shown). The workflow can still use the path if the runtime supports it.")
@@ -970,9 +1051,11 @@ struct ContentView: View {
                         .foregroundStyle(.secondary)
                 }
             } label: {
+                let isFolder = activeWorkflow?.launch?.inputKind == .folder
+                let noun = isFolder ? "Source folder" : "Source document"
                 Label(
-                    selectedFile == nil ? "Source document" : "Source document — \(selectedFile?.deletingPathExtension().lastPathComponent ?? "")",
-                    systemImage: "doc.plaintext"
+                    selectedFile == nil ? noun : "\(noun) — \(selectedFile?.deletingPathExtension().lastPathComponent ?? "")",
+                    systemImage: isFolder ? "folder" : "doc.plaintext"
                 )
                 .font(.headline)
             }
@@ -1051,28 +1134,45 @@ struct ContentView: View {
 
     // MARK: Parsing helpers
 
-    static func parseAttorneyItems(from markdown: String) -> [AttorneyReviewItem] {
-        var inQueue = false
+    /// The checklist under the report's "Attorney review focus" (or intake focus, or
+    /// "Issues requiring attorney review") heading. Subheadings inside the section
+    /// are part of it; the section ends at the next heading of the same or a higher
+    /// level. `- [x]` items come through ticked.
+    nonisolated static func parseAttorneyItems(from markdown: String) -> [AttorneyReviewItem] {
+        var sectionLevel: Int?
         var items: [AttorneyReviewItem] = []
         for line in markdown.components(separatedBy: .newlines) {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if trimmed.range(of: "^#{1,6}\\s+Attorney (review|intake) focus", options: [.regularExpression, .caseInsensitive]) != nil ||
-                trimmed.range(of: "^#{1,6}\\s+Issues requiring attorney review", options: [.regularExpression, .caseInsensitive]) != nil {
-                inQueue = true
-                continue
+            if let level = headingLevel(trimmed) {
+                if trimmed.range(of: "^#{1,6}\\s+Attorney (review|intake) focus", options: [.regularExpression, .caseInsensitive]) != nil ||
+                    trimmed.range(of: "^#{1,6}\\s+Issues requiring attorney review", options: [.regularExpression, .caseInsensitive]) != nil {
+                    sectionLevel = level
+                    continue
+                }
+                if let current = sectionLevel {
+                    if level <= current { break }
+                    continue
+                }
             }
-            if inQueue && trimmed.hasPrefix("#") { break }
-            guard inQueue, trimmed.hasPrefix("- [") else { continue }
-            let value = trimmed.replacingOccurrences(of: "^- \\[.\\]\\s*", with: "", options: .regularExpression)
+            guard sectionLevel != nil,
+                  let box = trimmed.range(of: "^[-*] \\[[ xX]\\]\\s*", options: .regularExpression) else { continue }
+            let checked = trimmed[box].contains { $0 == "x" || $0 == "X" }
+            let value = String(trimmed[box.upperBound...])
             guard !value.isEmpty else { continue }
             let severity = parseSeverity(from: value)
             let display = stripSeverityPrefix(from: value)
-            items.append(AttorneyReviewItem(id: "issue-\(items.count)-\(display)", text: display, severity: severity))
+            items.append(AttorneyReviewItem(id: "issue-\(items.count)-\(display)", text: display, severity: severity, checkedInReport: checked))
         }
         return items
     }
 
-    private static func parseSeverity(from text: String) -> String? {
+    /// 1–6 for a Markdown ATX heading (`## Title`), nil for anything else.
+    nonisolated private static func headingLevel(_ line: String) -> Int? {
+        guard let range = line.range(of: "^#{1,6}(\\s|$)", options: .regularExpression) else { return nil }
+        return line[range].filter { $0 == "#" }.count
+    }
+
+    nonisolated private static func parseSeverity(from text: String) -> String? {
         let pattern = #"^\**(CRITICAL|HIGH|MEDIUM|LOW|INFO)\**\b"#
         guard let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) else { return nil }
         let range = NSRange(text.startIndex..<text.endIndex, in: text)
@@ -1081,7 +1181,7 @@ struct ContentView: View {
         return String(text[swiftRange]).uppercased()
     }
 
-    private static func stripSeverityPrefix(from text: String) -> String {
+    nonisolated private static func stripSeverityPrefix(from text: String) -> String {
         var result = text
         if parseSeverity(from: text) != nil,
            let range = result.range(of: #"^\**(CRITICAL|HIGH|MEDIUM|LOW|INFO)\**"#, options: [.regularExpression, .caseInsensitive]) {

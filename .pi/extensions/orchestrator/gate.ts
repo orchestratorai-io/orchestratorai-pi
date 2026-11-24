@@ -44,7 +44,12 @@ export const SKIPPED: GateResult = {
  */
 export function gateRun(db: RunStore, runId: string, attached: boolean): RunRow | undefined {
   if (!attached || !runId) return undefined;
-  return db.getRun(runId) ?? db.findRunByPiId(runId);
+  const run = db.namedRun(runId);
+  // A run journalled from a Pi terminal (or another extension) has no app run
+  // behind it, even inside an app-launched Pi: nobody is shown its gate card.
+  // Rows from before the origin column (null) keep waiting as they used to.
+  if (!run || run.origin === "tui") return undefined;
+  return run;
 }
 
 export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
@@ -114,13 +119,14 @@ export async function attorneyGate(
     const current = db.getCheckpoint(checkpoint.id);
     if (current && current.status !== "pending") return decided(current);
     if (Date.now() - startedAt > opts.maxWaitMs) {
-      // Cancel only this gate's checkpoint. Other agents in the run may be
+      // Time out only this gate's checkpoint. Other agents in the run may be
       // waiting on their own approvals, and those stay pending and decidable.
-      if (!db.cancelCheckpointIfPending(checkpoint.id, "Timed out waiting for an attorney decision.")) {
+      if (!db.timeOutCheckpointIfPending(checkpoint.id, "No attorney decision was recorded in time.")) {
         // The attorney decided between the last poll and the timeout: use it.
         const late = db.getCheckpoint(checkpoint.id);
-        if (late && late.status !== "pending" && late.status !== "cancelled") return decided(late);
+        if (late && (late.status === "approved" || late.status === "changes_requested")) return decided(late);
       }
+      db.appendEvent({ runId: run.id, type: "gate_timed_out", summary: `Attorney gate timed out — ${params.title}`, payload: { checkpointId: checkpoint.id } });
       return {
         content: [{ type: "text", text: "DECISION: timed_out\nCOMMENT: No attorney decision was recorded in time." }],
         details: { checkpointId: checkpoint.id, status: "timed_out" },

@@ -51,13 +51,28 @@ struct CheckpointRecord: Identifiable, Hashable {
     let kind: String            // gate | final_review
     let title: String
     let summaryMarkdown: String?
-    let status: String          // pending | approved | changes_requested | cancelled
+    let status: String          // pending | approved | changes_requested | cancelled | timed_out
     let decisionComment: String?
     let requestedAt: String
     let decidedAt: String?
 
     var isPending: Bool { status == "pending" }
     var isGate: Bool { kind == "gate" }
+    /// The gate waited its full time and nobody decided. Rows from before the
+    /// `timed_out` status say `cancelled` with a "Timed out…" comment.
+    var isTimedOut: Bool { status == "timed_out" }
+
+    /// The status as the attorney reads it.
+    var statusLabel: String {
+        switch status {
+        case "pending": return "Pending"
+        case "approved": return "Approved"
+        case "changes_requested": return "Changes requested"
+        case "cancelled": return "Cancelled"
+        case "timed_out": return "Timed out (no decision in time)"
+        default: return status.replacingOccurrences(of: "_", with: " ")
+        }
+    }
 }
 
 /// One calibrated answer from a rubric question, reduced to its headline numbers.
@@ -152,7 +167,62 @@ enum ReviewState: Hashable {
     }
 }
 
-final class RunStore {
+/// What the human-review card offers when no final-review card is pending.
+enum FinalReviewControl: Equatable {
+    case none
+    /// The run completed but has no pending final review (it was never created, or
+    /// the last one was cancelled): without this it sat in Needs attention with no buttons.
+    case start
+    /// The attorney decided; they may reopen it.
+    case reopen
+
+    static func choose(state: ReviewState, checkpoints: [CheckpointRecord]) -> FinalReviewControl {
+        if checkpoints.contains(where: { $0.kind == "final_review" && $0.isPending }) { return .none }
+        switch state {
+        case .awaitingReview: return .start
+        case .approved, .changesRequested: return .reopen
+        default: return .none
+        }
+    }
+}
+
+/// Everything the app shows from the store, read in one go off the main thread
+/// (`PiRunner.refresh`) and published on it.
+struct RunSnapshot: Sendable {
+    var runs: [RunRecord] = []
+    var checkpointsByRun: [String: [CheckpointRecord]] = [:]
+    var evaluationCounts: [String: (block: Int, review: Int, pass: Int)] = [:]
+    /// The selection the per-run lists below were read for.
+    var selectedRunId: String?
+    var events: [RunEventRecord] = []
+    var stepOutputs: [RunStore.StepOutput] = []
+    var liveText: [RunStore.LiveText] = []
+    var evaluations: [EvaluationRecord] = []
+    var reviewChecks: [String: Bool] = [:]
+
+    /// A fixed number of queries whatever the number of runs (checkpoints come in one SELECT).
+    static func load(from store: RunStore, selectedRunId: String?) -> RunSnapshot {
+        var snapshot = RunSnapshot(selectedRunId: selectedRunId)
+        // Model experiments stay in the store (hidden, not deleted); only the buyer's lists skip them.
+        snapshot.runs = store.runs().filter { !LegalWorkflowCatalog.isHiddenFromRunList($0) }
+        let all = store.checkpointsByRun()
+        for run in snapshot.runs { snapshot.checkpointsByRun[run.id] = all[run.id] ?? [] }
+        snapshot.evaluationCounts = store.evaluationSummary()
+        if let selectedRunId {
+            snapshot.events = store.events(runId: selectedRunId)
+            snapshot.stepOutputs = store.stepOutputs(runId: selectedRunId)
+            snapshot.liveText = store.liveText(runId: selectedRunId)
+            snapshot.evaluations = store.evaluations(runId: selectedRunId)
+            snapshot.reviewChecks = store.reviewChecks(runId: selectedRunId)
+        }
+        return snapshot
+    }
+}
+
+/// `@unchecked Sendable`: the connection is opened `SQLITE_OPEN_FULLMUTEX`, so SQLite
+/// serialises every call on it. The app still gives its background reads a connection
+/// of their own (see `PiRunner`), so they never land inside a write transaction.
+final class RunStore: @unchecked Sendable {
     private var db: OpaquePointer?
     let path: String
 
@@ -166,10 +236,48 @@ final class RunStore {
         exec("PRAGMA journal_mode = WAL;")
         exec("PRAGMA busy_timeout = 5000;")
         exec(Self.schema)
-        // Columns newer than the file may be: added here too, so the app can read liveness
-        // before Pi has opened an older store. Fails harmlessly when the column exists.
-        exec("ALTER TABLE runs ADD COLUMN owner_pid INTEGER;")
-        exec("ALTER TABLE runs ADD COLUMN heartbeat_at TEXT;")
+        migrate()
+    }
+
+    /// Columns added after the first release, the same list as `MIGRATIONS` in
+    /// store.ts. `CREATE TABLE IF NOT EXISTS` leaves an older file's tables as they
+    /// were, so without these the app reading a store Pi has not opened since an
+    /// upgrade found no `step_index`/`value_json` and showed no step outputs.
+    static let migrations: [(table: String, column: String, ddl: String)] = [
+        ("runs", "flow_json", "ALTER TABLE runs ADD COLUMN flow_json TEXT"),
+        ("runs", "display", "ALTER TABLE runs ADD COLUMN display TEXT"),
+        ("runs", "resume_offset", "ALTER TABLE runs ADD COLUMN resume_offset INTEGER NOT NULL DEFAULT 0"),
+        ("runs", "resumes", "ALTER TABLE runs ADD COLUMN resumes INTEGER NOT NULL DEFAULT 0"),
+        ("run_events", "value_json", "ALTER TABLE run_events ADD COLUMN value_json TEXT"),
+        ("run_events", "step_index", "ALTER TABLE run_events ADD COLUMN step_index INTEGER"),
+        ("runs", "owner_pid", "ALTER TABLE runs ADD COLUMN owner_pid INTEGER"),
+        ("runs", "heartbeat_at", "ALTER TABLE runs ADD COLUMN heartbeat_at TEXT"),
+        ("runs", "origin", "ALTER TABLE runs ADD COLUMN origin TEXT"),
+        ("runs", "resume_rebinds", "ALTER TABLE runs ADD COLUMN resume_rebinds INTEGER NOT NULL DEFAULT 0"),
+    ]
+
+    /// Applies `migrations` idempotently, in one write transaction so a Pi opening the
+    /// store at the same moment takes turns with the app instead of racing on a column.
+    /// A column the other side added in the meantime makes the ALTER fail harmlessly.
+    private func migrate() {
+        exec("BEGIN IMMEDIATE;")
+        for m in Self.migrations where !columns(of: m.table).contains(m.column) {
+            exec(m.ddl + ";")
+        }
+        exec("COMMIT;")
+    }
+
+    func columns(of table: String) -> Set<String> {
+        Set(query("PRAGMA table_info(\(table))") { Self.text($0, named: "name") })
+    }
+
+    /// An ISO-8601 time with milliseconds, like Node's `toISOString()`. Node writes
+    /// `…00.123Z`; a bare `…00Z` sorts after it within the same second (`.` < `Z`),
+    /// which put the app's writes out of order against Pi's in `ORDER BY` on text.
+    static func timestamp(_ date: Date = Date()) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.string(from: date)
     }
 
     deinit {
@@ -184,7 +292,7 @@ final class RunStore {
       result_markdown TEXT, result_json TEXT, agents INTEGER, created_at TEXT NOT NULL,
       started_at TEXT, completed_at TEXT, updated_at TEXT NOT NULL,
       flow_json TEXT, display TEXT, resume_offset INTEGER NOT NULL DEFAULT 0, resumes INTEGER NOT NULL DEFAULT 0,
-      owner_pid INTEGER, heartbeat_at TEXT
+      owner_pid INTEGER, heartbeat_at TEXT, resume_rebinds INTEGER NOT NULL DEFAULT 0
     );
     CREATE INDEX IF NOT EXISTS runs_pi_run_id ON runs(pi_run_id);
     CREATE INDEX IF NOT EXISTS runs_created_at ON runs(created_at);
@@ -209,9 +317,17 @@ final class RunStore {
     CREATE TABLE IF NOT EXISTS run_progress (
       session_file TEXT PRIMARY KEY, text TEXT NOT NULL, updated_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS run_state (
+      run_id TEXT NOT NULL, key TEXT NOT NULL, value_json TEXT NOT NULL, reducer TEXT NOT NULL,
+      version INTEGER NOT NULL DEFAULT 1, updated_at TEXT NOT NULL, PRIMARY KEY (run_id, key)
+    );
     CREATE TABLE IF NOT EXISTS step_overrides (
       run_id TEXT NOT NULL, step_index INTEGER NOT NULL, value_json TEXT NOT NULL, note TEXT, at TEXT NOT NULL,
       PRIMARY KEY (run_id, step_index)
+    );
+    CREATE TABLE IF NOT EXISTS review_checks (
+      run_id TEXT NOT NULL, item_id TEXT NOT NULL, checked INTEGER NOT NULL, at TEXT NOT NULL,
+      PRIMARY KEY (run_id, item_id)
     );
     """
 
@@ -242,6 +358,11 @@ final class RunStore {
 
     func checkpoints(runId: String) -> [CheckpointRecord] {
         query("SELECT * FROM checkpoints WHERE run_id = ? ORDER BY requested_at", bind: [runId]) { Self.checkpoint(from: $0) }
+    }
+
+    /// Every run's checkpoints, in request order, from one query.
+    func checkpointsByRun() -> [String: [CheckpointRecord]] {
+        Dictionary(grouping: query("SELECT * FROM checkpoints ORDER BY run_id, requested_at") { Self.checkpoint(from: $0) }, by: \.runId)
     }
 
     func pendingCheckpoints() -> [CheckpointRecord] {
@@ -312,29 +433,58 @@ final class RunStore {
 
     @discardableResult
     func decide(checkpointId: String, status: String, comment: String) -> Bool {
-        let now = ISO8601DateFormatter().string(from: Date())
+        let now = Self.timestamp()
         return execute(
             "UPDATE checkpoints SET status = ?, decision_comment = ?, decided_at = ? WHERE id = ? AND status = 'pending'",
             bind: [status, comment, now, checkpointId]
         )
     }
 
-    /// Lets the attorney re-open a completed report for a fresh decision.
+    /// Opens a fresh final review of a completed run: "Reopen for review" after a
+    /// decision, or "Start final review" when the run finished without one (see
+    /// `FinalReviewControl`). The report is copied in as the card's summary, and
+    /// nothing is added while a final review is already pending.
     @discardableResult
     func reopenFinalReview(runId: String) -> Bool {
-        let now = ISO8601DateFormatter().string(from: Date())
+        let now = Self.timestamp()
         return execute(
-            "INSERT INTO checkpoints (id, run_id, kind, title, summary_markdown, status, requested_at) VALUES (?, ?, 'final_review', 'Attorney review of final report', NULL, 'pending', ?)",
-            bind: [UUID().uuidString.lowercased(), runId, now]
-        )
+            """
+            INSERT INTO checkpoints (id, run_id, kind, title, summary_markdown, status, requested_at)
+            SELECT ?, id, 'final_review', 'Attorney review of final report', result_markdown, 'pending', ?
+            FROM runs WHERE id = ? AND status = 'completed'
+              AND NOT EXISTS (SELECT 1 FROM checkpoints WHERE run_id = ? AND kind = 'final_review' AND status = 'pending')
+            """,
+            bind: [UUID().uuidString.lowercased(), now, runId, runId]
+        ) && changes() > 0
     }
 
+    /// The session files of a run's delegated agents, as journaled in its node_session events.
+    func sessionFiles(runId: String) -> [String] {
+        query("SELECT DISTINCT detail FROM run_events WHERE run_id = ? AND type = 'node_session' AND detail IS NOT NULL", bind: [runId]) {
+            Self.text($0, 0)
+        }
+    }
+
+    /// Deletes everything the store holds for one run, in one transaction: its journal,
+    /// gates, evaluations, step edits, checklist ticks, workflow state and its agents' live text. For a
+    /// legal app "Delete" has to delete; the run's session files on disk are removed by
+    /// `SessionFiles.remove` (the caller collects them with `sessionFiles(runId:)` first).
     @discardableResult
     func deleteRun(id: String) -> Bool {
-        execute("DELETE FROM run_events WHERE run_id = ?", bind: [id])
+        exec("BEGIN IMMEDIATE;")
+        let ok = execute(
+            "DELETE FROM run_progress WHERE session_file IN (SELECT detail FROM run_events WHERE run_id = ? AND type = 'node_session' AND detail IS NOT NULL)",
+            bind: [id]
+        )
+            && execute("DELETE FROM step_overrides WHERE run_id = ?", bind: [id])
+            && execute("DELETE FROM review_checks WHERE run_id = ?", bind: [id])
+            && execute("DELETE FROM run_state WHERE run_id = ?", bind: [id])
+            && execute("DELETE FROM run_events WHERE run_id = ?", bind: [id])
             && execute("DELETE FROM checkpoints WHERE run_id = ?", bind: [id])
             && execute("DELETE FROM evaluations WHERE run_id = ?", bind: [id])
             && execute("DELETE FROM runs WHERE id = ?", bind: [id])
+        exec(ok ? "COMMIT;" : "ROLLBACK;")
+        return ok
     }
 
     /// Marks a queued/running run as stopped when the Pi process died underneath it.
@@ -342,10 +492,53 @@ final class RunStore {
     /// the idempotent attorney_review tool picks the existing checkpoint back up.
     @discardableResult
     func markOrphaned(runId: String, message: String) -> Bool {
-        let now = ISO8601DateFormatter().string(from: Date())
+        let now = Self.timestamp()
         return execute(
             "UPDATE runs SET status = 'stopped', error = ?, completed_at = ?, updated_at = ? WHERE id = ? AND status IN ('queued','running')",
             bind: [message, now, now, runId]
+        )
+    }
+
+    /// The attorney pressed Stop: the run is stopped and its waiting gates are
+    /// cancelled, in one transaction. Done here rather than left to the extension's
+    /// `/orchestrator stop`, because the app ends the Pi process right after asking
+    /// and that reply may never come. (`markOrphaned`, for a Pi that died, keeps
+    /// gates pending on purpose so a resume picks them back up.)
+    @discardableResult
+    func markStoppedByUser(runId: String, message: String = "Stopped by the user.") -> Bool {
+        exec("BEGIN IMMEDIATE;")
+        let ok = markOrphaned(runId: runId, message: message)
+            && cancelPendingCheckpoints(runId: runId, reason: message)
+        exec(ok ? "COMMIT;" : "ROLLBACK;")
+        return ok
+    }
+
+    @discardableResult
+    func cancelPendingCheckpoints(runId: String, reason: String) -> Bool {
+        let now = Self.timestamp()
+        return execute(
+            "UPDATE checkpoints SET status = 'cancelled', decision_comment = ?, decided_at = ? WHERE run_id = ? AND status = 'pending'",
+            bind: [reason, now, runId]
+        )
+    }
+
+    // MARK: Attorney checklist
+
+    /// The attorney's ticks on a run's review checklist, by item id: true ticked,
+    /// false unticked (an item the report had ticked that the attorney cleared).
+    func reviewChecks(runId: String) -> [String: Bool] {
+        let rows: [(String, Bool)] = query("SELECT item_id, checked FROM review_checks WHERE run_id = ?", bind: [runId]) { stmt in
+            guard let item = Self.text(stmt, 0) else { return nil }
+            return (item, sqlite3_column_int64(stmt, 1) != 0)
+        }
+        return Dictionary(rows, uniquingKeysWith: { _, last in last })
+    }
+
+    @discardableResult
+    func setReviewCheck(runId: String, itemId: String, checked: Bool) -> Bool {
+        execute(
+            "INSERT OR REPLACE INTO review_checks (run_id, item_id, checked, at) VALUES (?, ?, ?, ?)",
+            bind: [runId, itemId, checked ? "1" : "0", Self.timestamp()]
         )
     }
 
@@ -361,12 +554,15 @@ final class RunStore {
 
     /// What each still-running agent of a run is writing right now. Children write
     /// run_progress keyed by their session file; the parent's node_session event carries it.
+    /// Only sessions opened since the run's latest resume count: an agent killed by a
+    /// crash never journals node_completed, and its last text would otherwise show as live.
     func liveText(runId: String) -> [LiveText] {
         query(
             """
             SELECT e.detail, e.label, p.text, p.updated_at
             FROM run_events e JOIN run_progress p ON p.session_file = e.detail
             WHERE e.run_id = ? AND e.type = 'node_session'
+              AND e.seq > COALESCE((SELECT MAX(r.seq) FROM run_events r WHERE r.run_id = e.run_id AND r.type = 'resume'), 0)
               AND NOT EXISTS (SELECT 1 FROM run_events d WHERE d.run_id = e.run_id AND d.node_instance = e.node_instance
                               AND d.type IN ('node_completed','node_failed','node_cancelled') AND d.seq > e.seq)
             ORDER BY p.updated_at DESC
@@ -388,34 +584,57 @@ final class RunStore {
         var id: Int { stepIndex }
     }
 
+    /// Each completed step as resume will use it: an attorney's saved edit
+    /// (`step_overrides.value_json`) is shown in place of the stored output, so the
+    /// card and a re-opened edit sheet start from the edit, not the original.
     func stepOutputs(runId: String) -> [StepOutput] {
-        let overrides = Set(query("SELECT step_index FROM step_overrides WHERE run_id = ?", bind: [runId]) { Int(sqlite3_column_int64($0, 0)) })
+        var overrides: [Int: String] = [:]
+        let saved: [(Int, String)] = query("SELECT step_index, value_json FROM step_overrides WHERE run_id = ?", bind: [runId]) { stmt in
+            (Int(sqlite3_column_int64(stmt, 0)), Self.text(stmt, 1) ?? "")
+        }
+        for (index, json) in saved { overrides[index] = json }
         return query(
             "SELECT step_index, label, value_json FROM run_events WHERE run_id = ? AND type = 'node_completed' AND step_index IS NOT NULL ORDER BY seq",
             bind: [runId]
         ) { stmt in
             let index = Int(sqlite3_column_int64(stmt, 0))
-            let raw = Self.text(stmt, 2) ?? ""
-            // Show strings as themselves, anything else as pretty JSON.
-            let shown: String
-            if let data = raw.data(using: .utf8), let obj = try? JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed]) {
-                if let str = obj as? String { shown = str }
-                else if let pretty = try? JSONSerialization.data(withJSONObject: obj, options: [.prettyPrinted, .sortedKeys]) { shown = String(data: pretty, encoding: .utf8) ?? raw }
-                else { shown = raw }
-            } else { shown = raw }
-            return StepOutput(stepIndex: index, label: Self.text(stmt, 1) ?? "step \(index + 1)", valueText: shown, isOverridden: overrides.contains(index))
+            let raw = overrides[index] ?? Self.text(stmt, 2) ?? ""
+            return StepOutput(stepIndex: index, label: Self.text(stmt, 1) ?? "step \(index + 1)", valueText: Self.displayText(json: raw), isOverridden: overrides[index] != nil)
         }
         .reduce(into: [Int: StepOutput]()) { $0[$1.stepIndex] = $1 }   // latest completion per step wins
         .values.sorted { $0.stepIndex < $1.stepIndex }
     }
 
+    /// A stored JSON value as the step card shows it: strings as themselves, anything else as pretty JSON.
+    static func displayText(json raw: String) -> String {
+        guard let obj = try? JSONSerialization.jsonObject(with: Data(raw.utf8), options: [.fragmentsAllowed]) else { return raw }
+        if let str = obj as? String { return str }
+        guard let pretty = try? JSONSerialization.data(withJSONObject: obj, options: [.prettyPrinted, .sortedKeys]) else { return raw }
+        return String(data: pretty, encoding: .utf8) ?? raw
+    }
+
+    /// The JSON an edited step output is saved as. Text that parses as a JSON object
+    /// or array is saved as that structure, because later steps read fields of it
+    /// (`{inventory.items}`, `map.over`, `switch`) and a quoted string breaks them.
+    /// Anything else, including bare numbers and `true`, stays the attorney's text.
+    static func overrideJSON(for text: String) -> String? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.hasPrefix("{") || trimmed.hasPrefix("[") {
+            if let obj = try? JSONSerialization.jsonObject(with: Data(trimmed.utf8)),
+               obj is [String: Any] || obj is [Any],
+               let data = try? JSONSerialization.data(withJSONObject: obj, options: [.sortedKeys]) {
+                return String(data: data, encoding: .utf8)
+            }
+        }
+        guard let data = try? JSONSerialization.data(withJSONObject: text, options: [.fragmentsAllowed]) else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
     /// Attorney edit of a completed step's output; resume uses it instead of the stored value.
     @discardableResult
     func setStepOverride(runId: String, stepIndex: Int, text: String, note: String?) -> Bool {
-        // Store the edited text as a JSON string so the extension can re-bind it as-is.
-        guard let data = try? JSONSerialization.data(withJSONObject: text, options: [.fragmentsAllowed]),
-              let json = String(data: data, encoding: .utf8) else { return false }
-        let now = ISO8601DateFormatter().string(from: Date())
+        guard let json = Self.overrideJSON(for: text) else { return false }
+        let now = Self.timestamp()
         return execute(
             "INSERT OR REPLACE INTO step_overrides (run_id, step_index, value_json, note, at) VALUES (?, ?, ?, ?, ?)",
             bind: [runId, String(stepIndex), json, note, now]
@@ -431,6 +650,11 @@ final class RunStore {
 
     private func exec(_ sql: String) {
         sqlite3_exec(db, sql, nil, nil, nil)
+    }
+
+    /// Rows changed by the last statement on this connection.
+    private func changes() -> Int {
+        Int(sqlite3_changes(db))
     }
 
     private func execute(_ sql: String, bind: [String?]) -> Bool {
@@ -569,5 +793,42 @@ final class RunStore {
                 confidence: kind == .noul ? nil : number(answer["confidence"])
             )
         }
+    }
+}
+
+/// Removes the on-disk Pi session files of a run the user deleted in the app. Only
+/// `.jsonl` files inside Pi's sessions folder are touched, so a stray path in the
+/// journal can never delete anything else; a session folder left empty goes too.
+enum SessionFiles {
+    static var defaultRoot: URL {
+        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".pi/agent/sessions", isDirectory: true)
+    }
+
+    /// The paths that are safe to delete: real `.jsonl` files under `root`.
+    static func deletable(_ paths: [String], under root: URL) -> [URL] {
+        let rootPath = root.standardizedFileURL.resolvingSymlinksInPath().path + "/"
+        return paths.compactMap { path in
+            let url = URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath()
+            guard url.pathExtension == "jsonl", url.path.hasPrefix(rootPath) else { return nil }
+            var isDir: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), !isDir.boolValue else { return nil }
+            return url
+        }
+    }
+
+    @discardableResult
+    static func remove(_ paths: [String], under root: URL = defaultRoot) -> Int {
+        let fm = FileManager.default
+        let rootPath = root.standardizedFileURL.resolvingSymlinksInPath().path
+        var removed = 0
+        for url in deletable(paths, under: root) {
+            guard (try? fm.removeItem(at: url)) != nil else { continue }
+            removed += 1
+            let folder = url.deletingLastPathComponent()
+            if folder.path != rootPath, (try? fm.contentsOfDirectory(atPath: folder.path))?.isEmpty == true {
+                try? fm.removeItem(at: folder)
+            }
+        }
+        return removed
     }
 }

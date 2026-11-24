@@ -67,6 +67,18 @@ function readableNode(event: TraceEvent): string {
   return nodeNames.get(key) ?? event.kind ?? "node";
 }
 
+/** Forgets a finished run's node names, so the map does not grow for the life of the Pi. */
+function forgetNodeNames(piRunId: string | undefined): void {
+  const prefix = `${piRunId ?? ""}:`;
+  for (const key of [...nodeNames.keys()]) if (key.startsWith(prefix)) nodeNames.delete(key);
+}
+
+/** How many node names are remembered for a pi-agents run (for tests). */
+export function rememberedNodeNames(piRunId: string): number {
+  const prefix = `${piRunId}:`;
+  return [...nodeNames.keys()].filter((key) => key.startsWith(prefix)).length;
+}
+
 function summarize(event: TraceEvent): string {
   switch (event.type) {
     case "run_created": {
@@ -122,6 +134,12 @@ function presentResult(value: unknown, display: string | undefined): string | un
   return undefined;
 }
 
+/** 1st, 2nd, 3rd, 4th … 11th, 12th, 13th … 21st, 22nd, 23rd. */
+export function ordinal(n: number): string {
+  const suffix = n % 100 >= 11 && n % 100 <= 13 ? "th" : n % 10 === 1 ? "st" : n % 10 === 2 ? "nd" : n % 10 === 3 ? "rd" : "th";
+  return `${n}${suffix}`;
+}
+
 export function jsonText(value: unknown): string | undefined {
   if (value === undefined) return undefined;
   try {
@@ -146,14 +164,19 @@ export function stringMap(raw: unknown): Record<string, string> {
  * Top-level step index for a node path. A saved-workflow run's root is a
  * `workflow` node whose body is the sequence, so steps are `$.body.steps[i]`.
  * A resumed run is an inline sequence, so steps are `$.steps[k]` and map back
- * to the original index via the run's resume offset.
+ * to the original index via the run's resume offset. The first `rebinds`
+ * steps of a resumed flow are its `resume:*` value nodes, which re-bind steps
+ * that already have their completion journalled: they get no index at all.
  */
-function topLevelStepIndex(path: string | undefined, resumeOffset: number): number | undefined {
+export function topLevelStepIndex(path: string | undefined, resumeOffset: number, rebinds = 0): number | undefined {
   if (!path) return undefined;
   let m = /^\$\.body\.steps\[(\d+)\]$/.exec(path);
   if (m) return Number(m[1]);
   m = /^\$\.steps\[(\d+)\]$/.exec(path);
-  if (m) return Number(m[1]) + resumeOffset;
+  if (m) {
+    const k = Number(m[1]);
+    return k < rebinds ? undefined : k + resumeOffset;
+  }
   return undefined;
 }
 
@@ -191,13 +214,18 @@ function substituteParams(node: unknown, params: Record<string, string>): unknow
  * completed top-level step's result (an attorney override wins over the stored
  * value), then the remaining steps run unchanged. A step that was partly done
  * (a loop mid-iteration, a gate mid-wait) re-runs whole; gates are idempotent.
+ * A workflow whose root is one node rather than a sequence resumes as a
+ * one-step sequence, i.e. that node runs again.
  */
 export function buildResumeFlow(run: RunRow, completed: Map<number, unknown>, overrides: Map<number, unknown>) {
   if (!run.flow_json) throw new Error("run has no stored flow (started before resume support)");
   const flow = JSON.parse(run.flow_json) as { kind: string; body?: { kind: string; steps?: unknown[] }; steps?: unknown[] };
   const root = flow.kind === "workflow" ? flow.body : flow;
-  if (!root || root.kind !== "sequence" || !Array.isArray(root.steps)) throw new Error("resume supports sequence-rooted workflows");
-  const steps = root.steps as Array<{ as?: string }>;
+  if (!root || typeof root.kind !== "string") throw new Error("run has no resumable flow");
+  // A single-node root (kb-query is one agent, not a sequence) is a one-step sequence:
+  // nothing before it can have completed, so resume simply runs that node again.
+  const steps = (root.kind === "sequence" ? root.steps : [root]) as Array<{ as?: string }>;
+  if (!Array.isArray(steps)) throw new Error("run has no resumable flow");
   let resumeAt = 0;
   while (resumeAt < steps.length && (overrides.has(resumeAt) || completed.has(resumeAt))) resumeAt++;
   if (resumeAt >= steps.length) throw new Error("nothing to resume: every step already completed");
@@ -212,12 +240,14 @@ export function buildResumeFlow(run: RunRow, completed: Map<number, unknown>, ov
   const remaining = steps.slice(resumeAt).map((st) => substituteParams(st, params));
   // In the rebuilt flow, `$.steps[k]` is original step `k - rebinds.length + resumeAt`.
   const resumeOffset = resumeAt - rebinds.length;
-  return { flow: { kind: "sequence", steps: [...rebinds, ...remaining] }, resumeAt, resumeOffset, display: run.display ?? undefined };
+  return { flow: { kind: "sequence", steps: [...rebinds, ...remaining] }, resumeAt, resumeOffset, rebinds: rebinds.length, display: run.display ?? undefined };
 }
 // ------------------------------------------------------------- liveness
 
 /** Whether a process with this pid exists (EPERM: it exists but is not ours). */
 export function processAlive(pid: number): boolean {
+  // 0 and negative pids name process groups, so kill(pid, 0) would "succeed" for them.
+  if (!Number.isInteger(pid) || pid <= 0) return false;
   try {
     process.kill(pid, 0);
     return true;
@@ -274,8 +304,12 @@ export type Reply = Record<string, unknown> & { ok: boolean; op: string };
 export class Journal {
   private readonly headers = new Map<string, RunHeader>();
   private readonly piToLocal = new Map<string, string>();
-  /** Set while a resume's `start` is in flight, so its `run_created` lands on the run being resumed. */
-  private pendingResume: { runId: string; label: string; resumeOffset: number; attachedTo?: string } | undefined;
+  /** Local run ids with a resume in flight in this Pi, reserved before the first await. */
+  private readonly resuming = new Set<string>();
+  /** Resumes whose `start` is in flight, by local run id, so each `run_created` lands on the run being resumed. */
+  private readonly pendingResumes = new Map<string, { runId: string; label: string; resumeOffset: number; rebinds: number; attachedTo?: string }>();
+  /** pi-agents run ids whose run_completed has been seen, so a late `start` reply cannot revive them. */
+  private readonly finishedPi = new Set<string>();
   readonly pid: number;
   private readonly pidAlive: (pid: number) => boolean;
   private readonly now: () => number;
@@ -302,6 +336,24 @@ export class Journal {
     if (ids.length) this.store()?.heartbeat(ids, this.pid);
   }
 
+  /**
+   * A new copy of this extension in the same Pi (after a reload or session
+   * switch) starts with an empty run map. Take back the runs this process still
+   * drives so their heartbeat keeps going. Only call this when an earlier copy
+   * ran in this process: in a fresh process a matching owner_pid is a reused pid.
+   */
+  adopt(store?: RunStore): number {
+    const db = store ?? this.store();
+    if (!db) return 0;
+    let n = 0;
+    for (const row of db.liveRunsOwnedBy(this.pid)) {
+      if (!row.pi_run_id || this.finishedPi.has(row.pi_run_id)) continue;
+      this.piToLocal.set(row.pi_run_id, row.id);
+      n++;
+    }
+    return n;
+  }
+
   /** Pi is shutting down: nothing drives its runs any more. */
   release(): void {
     this.store()?.releaseOwnedRuns(this.pid);
@@ -319,10 +371,11 @@ export class Journal {
       // pi-agents emits run_created inside `start`, before its reply. For a resume
       // that is the resumed run; an inline resume flow carries no run_id param, so
       // without this it used to get a junk "inline … (resumed)" row of its own.
-      const pending = this.pendingResume;
-      if (pending && !pending.attachedTo && event.run.label === pending.label) {
+      // Map order is start order, so two same-titled resumes attach first-come first-served.
+      const pending = [...this.pendingResumes.values()].find((p) => !p.attachedTo && p.label === event.run!.label);
+      if (pending) {
         pending.attachedTo = piRunId;
-        db.markResumed(pending.runId, piRunId, pending.resumeOffset, this.pid);
+        db.markResumed(pending.runId, piRunId, pending.resumeOffset, this.pid, pending.rebinds);
         this.piToLocal.set(piRunId, pending.runId);
         return db.getRun(pending.runId);
       }
@@ -336,6 +389,7 @@ export class Journal {
           title: event.run.label ?? event.run.source.workflow ?? "Workflow run",
           params: stringMap(event.run.params ?? event.run.flow?.params),
           ownerPid: this.pid,
+          origin: "tui",
         });
       }
       db.markStarted(row.id, piRunId, this.pid);
@@ -384,34 +438,27 @@ export class Journal {
       label,
       detail: detail ?? (event.type === "node_session" ? event.sessionFile : undefined),
       value: event.type === "node_completed" ? event.value : undefined,
-      stepIndex: event.type === "node_completed" && !rebind ? topLevelStepIndex(event.path, run.resume_offset) : undefined,
+      stepIndex: event.type === "node_completed" && !rebind ? topLevelStepIndex(event.path, run.resume_offset, run.resume_rebinds ?? 0) : undefined,
     });
 
     if (event.type === "run_completed") {
       const header = this.headers.get(event.runId ?? "");
       const status = (event.status ?? "failed") as "completed" | "failed" | "stopped";
-      const markdown = presentResult(event.value, header?.display);
-      db.markFinished(run.id, {
-        status,
-        error: event.error,
-        resultMarkdown: markdown,
-        resultJson: jsonText(event.value),
-        agents: event.agents,
-        at: event.at,
-      });
-      if (status === "completed") {
-        db.createCheckpoint({
-          id: randomUUID(),
-          runId: run.id,
-          kind: "final_review",
-          title: "Attorney review of final report",
-          summaryMarkdown: markdown,
-        });
-      } else {
-        db.cancelPendingCheckpoints(run.id, `Workflow ${status}.`);
-      }
+      // The header is gone if this Pi never saw run_created; the row kept the run's `display`.
+      const markdown = presentResult(event.value, header?.display ?? run.display ?? undefined);
+      // The finished mark and the final review (or the cancelled gates) land together.
+      db.finishRun(
+        run.id,
+        { status, error: event.error, resultMarkdown: markdown, resultJson: jsonText(event.value), agents: event.agents, at: event.at },
+        { checkpointId: randomUUID() },
+      );
       this.headers.delete(event.runId ?? "");
-      if (event.runId) this.piToLocal.delete(event.runId);
+      forgetNodeNames(event.runId);
+      if (event.runId) {
+        this.piToLocal.delete(event.runId);
+        this.finishedPi.add(event.runId);
+        if (this.finishedPi.size > 1000) this.finishedPi.delete(this.finishedPi.values().next().value!);
+      }
     }
   }
 
@@ -429,12 +476,16 @@ export class Journal {
       params,
       model: typeof input.model === "string" ? input.model : fallbackModel,
       ownerPid: this.pid,
+      origin: "app",
     });
     db.appendEvent({ runId: row.id, type: "queued", summary: `Queued ${workflow}` });
     try {
       const started = await this.agents.start({ workflow, params, label: title });
-      db.markStarted(row.id, started.runId, this.pid);
-      this.piToLocal.set(started.runId, row.id);
+      // A run that failed at once can report run_completed before `start` replies; leave it finished.
+      if (!this.finishedPi.has(started.runId)) {
+        db.markStarted(row.id, started.runId, this.pid);
+        this.piToLocal.set(started.runId, row.id);
+      }
       return { ok: true, op: "start", runId: row.id, piRunId: started.runId, warnings: started.warnings ?? [] };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -446,30 +497,48 @@ export class Journal {
 
   async resume(db: RunStore, input: Record<string, unknown>): Promise<Reply> {
     const runId = typeof input.runId === "string" ? input.runId : "";
-    const row = db.getRun(runId);
-    if (!row) throw new Error(`unknown run '${runId}'`);
-    if (row.status === "completed") throw new Error("run already completed");
-    const ownedHere = this.liveRunIds().includes(row.id) || this.pendingResume?.runId === row.id;
-    const busyNow = () =>
-      stillRunningReason(db.getRun(row.id) ?? row, { selfPid: this.pid, ownedHere, now: this.now(), pidAlive: this.pidAlive });
-    let busy = busyNow();
-    // The app stops the old Pi right before it resumes; give that process a moment to exit.
-    for (const deadline = Date.now() + this.ownerExitWaitMs; busy && !ownedHere && Date.now() < deadline; busy = busyNow()) {
-      await new Promise((r) => setTimeout(r, 250));
+    const first = db.getRun(runId);
+    if (!first) throw new Error(`unknown run '${runId}'`);
+    if (first.status === "completed") throw new Error("run already completed");
+    const ownedHere = () => this.resuming.has(runId) || this.liveRunIds().includes(runId);
+    if (ownedHere()) throw new Error(`not resumed: ${stillRunningReason(first, { selfPid: this.pid, ownedHere: true, now: this.now(), pidAlive: this.pidAlive })}.`);
+    // Reserved before the first await: a second resume of this run in this Pi is refused above.
+    this.resuming.add(runId);
+    try {
+      const busyNow = () =>
+        stillRunningReason(db.getRun(runId) ?? first, { selfPid: this.pid, ownedHere: false, now: this.now(), pidAlive: this.pidAlive });
+      let busy = busyNow();
+      // The app stops the old Pi right before it resumes; give that process a moment to exit.
+      for (const deadline = Date.now() + this.ownerExitWaitMs; busy && Date.now() < deadline; busy = busyNow()) {
+        await new Promise((r) => setTimeout(r, 250));
+      }
+      if (busy) throw new Error(`not resumed: ${busy}.`);
+      // The previous Pi may have finished (or resumed) the run while we waited: decide on the row as it is now.
+      const row = db.getRun(runId);
+      if (!row) throw new Error(`unknown run '${runId}'`);
+      if (row.status === "completed") throw new Error("run already completed");
+      return await this.startResume(db, row, input);
+    } finally {
+      this.resuming.delete(runId);
     }
-    if (busy) throw new Error(`not resumed: ${busy}.`);
+  }
+
+  private async startResume(db: RunStore, row: RunRow, input: Record<string, unknown>): Promise<Reply> {
     const model = typeof input.model === "string" && input.model.trim() ? input.model.trim() : undefined;
-    const { flow, resumeAt, resumeOffset, display } = buildResumeFlow(row, db.completedStepValues(row.id), db.stepOverrides(row.id));
+    const { flow, resumeAt, resumeOffset, rebinds, display } = buildResumeFlow(row, db.completedStepValues(row.id), db.stepOverrides(row.id));
     const nth = row.resumes + 1;
-    const suffix = nth % 100 >= 11 && nth % 100 <= 13 ? "th" : nth % 10 === 1 ? "st" : nth % 10 === 2 ? "nd" : nth % 10 === 3 ? "rd" : "th";
-    db.appendEvent({ runId: row.id, type: "resume", summary: `Resuming from step ${resumeAt + 1} (${nth}${suffix} resume${model ? ` on ${model}` : ""})` });
+    db.appendEvent({ runId: row.id, type: "resume", summary: `Resuming from step ${resumeAt + 1} (${ordinal(nth)} resume${model ? ` on ${model}` : ""})` });
     const label = `${row.title} (resumed)`;
-    this.pendingResume = { runId: row.id, label, resumeOffset };
+    const pending: { runId: string; label: string; resumeOffset: number; rebinds: number; attachedTo?: string } = { runId: row.id, label, resumeOffset, rebinds };
+    this.pendingResumes.set(row.id, pending);
     try {
       const started = await this.agents.start({ flow, label, display });
       // run_created normally arrives inside `start` and has already claimed the row.
-      if (this.pendingResume.attachedTo !== started.runId) db.markResumed(row.id, started.runId, resumeOffset, this.pid);
-      this.piToLocal.set(started.runId, row.id);
+      // A resume that already reported run_completed stays finished.
+      if (!this.finishedPi.has(started.runId)) {
+        if (pending.attachedTo !== started.runId) db.markResumed(row.id, started.runId, resumeOffset, this.pid, rebinds);
+        this.piToLocal.set(started.runId, row.id);
+      }
       if (model) db.setModel(row.id, model);
       return { ok: true, op: "resume", runId: row.id, piRunId: started.runId, resumeAt, model: model ?? row.model, warnings: started.warnings ?? [] };
     } catch (error) {
@@ -477,7 +546,7 @@ export class Journal {
       db.appendEvent({ runId: row.id, type: "start_failed", summary: `Could not resume — ${message}` });
       return { ok: false, op: "resume", runId: row.id, error: message };
     } finally {
-      this.pendingResume = undefined;
+      this.pendingResumes.delete(row.id);
     }
   }
 }

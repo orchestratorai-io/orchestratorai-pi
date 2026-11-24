@@ -8,11 +8,24 @@ import Foundation
 final class PiRunner: ObservableObject {
     @Published var runs: [RunRecord] = []
     @Published var checkpointsByRun: [String: [CheckpointRecord]] = [:]
-    @Published var selectedRunId: String?
+    @Published var selectedRunId: String? {
+        didSet {
+            // Reads are off the main thread now: until the new run's arrive, show
+            // nothing rather than the previous run's journal under the new title.
+            guard selectedRunId != oldValue else { return }
+            events = []
+            stepOutputs = []
+            liveText = []
+            evaluations = []
+            reviewChecks = [:]
+        }
+    }
     @Published var events: [RunEventRecord] = []
     @Published var evaluations: [EvaluationRecord] = []
     @Published var stepOutputs: [RunStore.StepOutput] = []
     @Published var liveText: [RunStore.LiveText] = []
+    /// The selected run's saved checklist ticks (see `AttorneyReviewItem.reviewedIDs`).
+    @Published var reviewChecks: [String: Bool] = [:]
     @Published var evaluationCounts: [String: (block: Int, review: Int, pass: Int)] = [:]
     @Published var status = "Ready"
     @Published var isRunning = false
@@ -75,31 +88,62 @@ final class PiRunner: ObservableObject {
     func attach(projectDirectory: URL) {
         self.projectDirectory = projectDirectory
         store = RunStore(projectDirectory: projectDirectory)
+        // Background reads get their own connection: the app's writes (decisions, Stop,
+        // Delete) run in transactions on `store`, and a read must not land inside one.
+        reader = store == nil ? nil : RunStore(projectDirectory: projectDirectory)
         storeUnavailable = store == nil
         markOrphanedRuns()
-        refresh()
-        if selectedRunId == nil { selectedRunId = runs.first?.id }
+        // Once, synchronously, so the first selection below sees the runs.
+        if let store { apply(RunSnapshot.load(from: store, selectedRunId: selectedRunId)) }
+        if selectedRunId == nil, let first = runs.first?.id { select(runId: first) }
         schedulePolling()
     }
 
+    /// Re-reads the store off the main thread and publishes it. A run streaming text
+    /// asks for this several times a second; at most one read is in flight and one
+    /// more queued, so bursts collapse instead of piling up.
     func refresh() {
-        guard let store else { return }
-        // Model experiments stay in the store (hidden, not deleted); only the buyer's lists skip them.
-        runs = store.runs().filter { !LegalWorkflowCatalog.isHiddenFromRunList($0) }
-        var map: [String: [CheckpointRecord]] = [:]
-        for run in runs { map[run.id] = store.checkpoints(runId: run.id) }
-        checkpointsByRun = map
-        evaluationCounts = store.evaluationSummary()
-        if let selectedRunId {
-            events = store.events(runId: selectedRunId)
-            stepOutputs = store.stepOutputs(runId: selectedRunId)
-            liveText = store.liveText(runId: selectedRunId)
-            evaluations = store.evaluations(runId: selectedRunId)
+        guard let reader else { return }
+        if readInFlight {
+            readQueued = true
+            return
+        }
+        readInFlight = true
+        let selected = selectedRunId
+        Self.readQueue.async {
+            let snapshot = RunSnapshot.load(from: reader, selectedRunId: selected)
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    self.readInFlight = false
+                    self.apply(snapshot)
+                    if self.readQueued {
+                        self.readQueued = false
+                        self.refresh()
+                    }
+                }
+            }
+        }
+    }
+
+    private static let readQueue = DispatchQueue(label: "ai.orchestrator.pi.store-reads", qos: .userInitiated)
+    private var reader: RunStore?
+    private var readInFlight = false
+    private var readQueued = false
+
+    private func apply(_ snapshot: RunSnapshot) {
+        runs = snapshot.runs
+        checkpointsByRun = snapshot.checkpointsByRun
+        evaluationCounts = snapshot.evaluationCounts
+        // Lists read for a run that is no longer selected would show under the wrong
+        // run; changing the selection cleared them, and the queued read brings the new ones.
+        if snapshot.selectedRunId == selectedRunId {
+            events = snapshot.events
+            stepOutputs = snapshot.stepOutputs
+            liveText = snapshot.liveText
+            evaluations = snapshot.evaluations
+            reviewChecks = snapshot.reviewChecks
         } else {
-            events = []
-            stepOutputs = []
-            liveText = []
-            evaluations = []
+            readQueued = true
         }
         if let activeRunId, let run = runs.first(where: { $0.id == activeRunId }) {
             let state = reviewState(for: run)
@@ -112,6 +156,8 @@ final class PiRunner: ObservableObject {
             if state.isLive {
                 activeRunWentLive = true
             } else if activeRunWentLive {
+                // finishActiveProcess also lets go of the run: left set, every later
+                // refresh kept writing this finished run's state into `status`.
                 finishActiveProcess()
             }
         }
@@ -224,10 +270,8 @@ final class PiRunner: ObservableObject {
         process.arguments = [
             "--mode", "rpc",
             "--approve",
-            "--no-session",
-            "--provider", "ollama",
-            "--model", model
-        ]
+            "--no-session"
+        ] + LocalModelReference(model).arguments
         process.currentDirectoryURL = projectDirectory
         process.environment = PiEnvironment.processEnvironment(piExecutable: piPath, projectDirectory: projectDirectory)
         process.standardInput = input
@@ -282,20 +326,31 @@ final class PiRunner: ObservableObject {
     /// Give up on a launch the extension never answers (see `LaunchWatchdog`).
     private func armLaunchWatchdog(command: String, runId: String) {
         launchWatchdog?.cancel()
-        let started = Date()
+        // Monotonic, like Task.sleep: a wall-clock step (NTP) can neither end the wait early
+        // nor make it read as not yet due and exit, leaving "Launching workflow…" up for good.
+        let clock = ContinuousClock()
+        let started = clock.now
         launchWatchdog = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .seconds(LaunchWatchdog.timeout))
-            guard !Task.isCancelled, let self, self.activeRunId == runId else { return }
-            let live = self.store?.run(id: runId)?.isLive == true && self.activeRunWentLive
-            switch LaunchWatchdog.verdict(elapsed: Date().timeIntervalSince(started), replied: self.launchReplied, runWentLive: live, command: command) {
-            case .timedOut(let message):
-                self.errorMessage = message
-                self.status = "Could not launch"
-                self.finishActiveProcess()
-                self.activeRunId = nil
-                self.refresh()
-            case .keepWaiting, .done:
-                break
+            var wait = LaunchWatchdog.timeout
+            while true {
+                try? await Task.sleep(for: .seconds(wait), clock: clock)
+                guard !Task.isCancelled, let self, self.activeRunId == runId else { return }
+                let live = self.store?.run(id: runId)?.isLive == true && self.activeRunWentLive
+                let elapsed = LaunchWatchdog.seconds(clock.now - started)
+                switch LaunchWatchdog.verdict(elapsed: elapsed, replied: self.launchReplied, runWentLive: live, command: command) {
+                case .timedOut(let message):
+                    self.errorMessage = message
+                    self.status = "Could not launch"
+                    self.finishActiveProcess()
+                    self.activeRunId = nil
+                    self.refresh()
+                    return
+                case .done:
+                    return
+                case .keepWaiting:
+                    // Woke early: wait out the rest instead of giving up silently.
+                    wait = LaunchWatchdog.remaining(elapsed: elapsed)
+                }
             }
         }
     }
@@ -317,7 +372,10 @@ final class PiRunner: ObservableObject {
     func stop() {
         if let activeRunId, process?.isRunning == true {
             send(["type": "prompt", "message": "/orchestrator stop {\"runId\":\"\(activeRunId)\"}"])
-            store?.markOrphaned(runId: activeRunId, message: "Stopped by the user.")
+            // Pi is ended on the next line, before it can act on the stop command, so the
+            // app itself marks the run stopped and cancels its waiting gates. Otherwise a
+            // stopped run kept a pending gate card nobody could ever answer.
+            store?.markStoppedByUser(runId: activeRunId)
         }
         finishActiveProcess()
         activeRunId = nil
@@ -330,30 +388,37 @@ final class PiRunner: ObservableObject {
         launchWatchdog = nil
         outputPipe?.fileHandleForReading.readabilityHandler = nil
         if let process, process.isRunning {
-            terminateDirectChildren(of: process.processIdentifier)
+            ProcessTree.terminate(pid: process.processIdentifier)
             process.terminate()
         }
         process = nil
         inputPipe = nil
         outputPipe = nil
         isRunning = false
+        activeRunId = nil
     }
 
-    private func terminateDirectChildren(of pid: Int32) {
-        let killer = Process()
-        killer.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
-        killer.arguments = ["-TERM", "-P", String(pid)]
-        try? killer.run()
-        killer.waitUntilExit()
-    }
 
     // MARK: Attorney decisions
 
     func decide(checkpoint: CheckpointRecord, approved: Bool, comment: String) {
-        let note = comment.trimmingCharacters(in: .whitespacesAndNewlines)
-        let status = approved ? "approved" : "changes_requested"
-        let prefix = approved ? "Approved by attorney." : "Changes requested by attorney."
-        store?.decide(checkpointId: checkpoint.id, status: status, comment: note.isEmpty ? prefix : "\(prefix) \(note)")
+        let decision = Self.decision(approved: approved, comment: comment)
+        store?.decide(checkpointId: checkpoint.id, status: decision.status, comment: decision.comment)
+        refresh()
+    }
+
+    /// What a decision stores. The comment is the attorney's note exactly as typed
+    /// (trimmed), because the next step receives it verbatim: in cross-exam it is the
+    /// witness's answer. The approval is recorded only in `status`; nothing like
+    /// "Approved by attorney." is ever added to the text.
+    nonisolated static func decision(approved: Bool, comment: String) -> (status: String, comment: String) {
+        (approved ? "approved" : "changes_requested", comment.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    /// The attorney ticked or unticked a checklist item; shown at once, saved in the store.
+    func setReviewed(runId: String, itemId: String, reviewed: Bool) {
+        if runId == selectedRunId { reviewChecks[itemId] = reviewed }
+        store?.setReviewCheck(runId: runId, itemId: itemId, checked: reviewed)
         refresh()
     }
 
@@ -374,7 +439,9 @@ final class PiRunner: ObservableObject {
 
     func deleteRun(_ run: RunRecord) {
         if run.id == activeRunId { stop() }
-        store?.deleteRun(id: run.id)
+        // Collect the session files before the journal that names them is deleted.
+        let files = store?.sessionFiles(runId: run.id) ?? []
+        if store?.deleteRun(id: run.id) == true { SessionFiles.remove(files) }
         if selectedRunId == run.id { selectedRunId = nil }
         refresh()
     }
@@ -455,5 +522,33 @@ final class PiRunner: ObservableObject {
             }
             return lines
         }
+    }
+}
+
+/// Ends a Pi process and everything it started. Pi's delegated agents are its
+/// children, and they start processes of their own; killing only Pi's direct
+/// children (the old `pkill -P`) left those grandchildren running. Foundation's
+/// `Process` starts Pi as the leader of its own process group, so signalling the
+/// group reaches every descendant that did not leave it; direct children that did
+/// are signalled as before.
+enum ProcessTree {
+    /// Whether `pid` leads a process group of its own that is not the app's
+    /// (signalling the app's own group would end the app).
+    nonisolated static func ownsGroup(pid: Int32) -> Bool {
+        guard pid > 0 else { return false }
+        let group = getpgid(pid)
+        return group == pid && group != getpgrp()
+    }
+
+    nonisolated static func terminate(pid: Int32, signal: Int32 = SIGTERM) {
+        guard pid > 0 else { return }
+        // The group first, while Pi is certainly alive: once its children die it may
+        // exit and be reaped, and then its group can no longer be looked up.
+        if ownsGroup(pid: pid) { killpg(pid, signal) }
+        let killer = Process()
+        killer.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
+        killer.arguments = ["-\(signal)", "-P", String(pid)]
+        try? killer.run()
+        killer.waitUntilExit()
     }
 }

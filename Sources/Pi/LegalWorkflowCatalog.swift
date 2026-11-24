@@ -118,19 +118,51 @@ enum LegalWorkflowCatalog {
 
         // Any additional project workflow that carries a launch block is offered too,
         // so a Mac user who authors their own YAML sees it without touching the app.
-        let known = Set(definitions.map(\.id))
+        // They are keyed by the YAML's `name:`, not the file name: that name is what Pi runs
+        // and what the store records as the run's workflow, so runs find their catalog entry.
+        var known = Set(definitions.map(\.id))
         let extra = ((try? FileManager.default.contentsOfDirectory(at: workflowsDir, includingPropertiesForKeys: nil)) ?? [])
             .filter { $0.pathExtension == "yaml" || $0.pathExtension == "yml" }
             .sorted { $0.lastPathComponent < $1.lastPathComponent }
         for url in extra {
-            let id = url.deletingPathExtension().lastPathComponent
-            guard !known.contains(id), let launch = WorkflowLaunchSpec.load(from: url), !launch.groupId.isEmpty else { continue }
+            guard let launch = WorkflowLaunchSpec.load(from: url), !launch.groupId.isEmpty else { continue }
+            let id = launch.workflowName
+            guard !known.contains(id) else { continue }
+            known.insert(id)
             definitions.append(WorkflowDefinition(
                 id: id, title: launch.title, icon: launch.icon, description: launch.description,
                 groupId: launch.groupId, status: .ready, launch: launch
             ))
         }
         return definitions
+    }
+
+    /// The sidebar's sections: the five Legal groups in their order, then any group a
+    /// workflow names that is not one of them (a user's own `group: tax`), in the order
+    /// those groups first appear, named from the id. Empty groups are left out.
+    static func sidebarSections(for workflows: [WorkflowDefinition]) -> [(group: WorkflowGroupDefinition, items: [WorkflowDefinition])] {
+        var sections: [(group: WorkflowGroupDefinition, items: [WorkflowDefinition])] = []
+        for group in groups {
+            let items = workflows.filter { $0.groupId == group.id }
+            if !items.isEmpty { sections.append((group, items)) }
+        }
+        let knownIds = Set(groups.map(\.id))
+        var extraIds: [String] = []
+        for workflow in workflows where !knownIds.contains(workflow.groupId) && !extraIds.contains(workflow.groupId) {
+            extraIds.append(workflow.groupId)
+        }
+        for (offset, id) in extraIds.enumerated() {
+            let group = WorkflowGroupDefinition(id: id, name: groupName(fromId: id), sortOrder: groups.count + offset)
+            sections.append((group, workflows.filter { $0.groupId == id }))
+        }
+        return sections
+    }
+
+    /// "tax-and-estates" -> "Tax And Estates"; an empty id (a workflow with no group) -> "Other".
+    static func groupName(fromId id: String) -> String {
+        let words = id.split(whereSeparator: { $0 == "-" || $0 == "_" || $0 == " " })
+        guard !words.isEmpty else { return "Other" }
+        return words.map { $0.prefix(1).uppercased() + $0.dropFirst() }.joined(separator: " ")
     }
 
     static func workflow(id: String, projectDirectory: URL) -> WorkflowDefinition? {

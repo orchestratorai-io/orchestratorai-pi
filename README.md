@@ -53,6 +53,8 @@ Every run is resumable from the store, without pi-agents support for it:
   re-runs; a gate the attorney already decided is picked straight back up because `attorney_review` is
   idempotent per (run, title), and a crash never cancels a pending decision (only an explicit stop does).
   Verified by killing Pi at the contract-review gate: resume ran two more agent calls, not five.
+  A workflow whose root is one node rather than a sequence (kb-query is a single agent) resumes as a
+  one-step sequence: that node runs again.
 - **One Pi per run.** Each run row records the Pi process driving it (`owner_pid`), which refreshes
   `heartbeat_at` every 30 s while it lives, gates and slow models included. The app marks a run stopped
   only when that process is gone (or has not beaten for 10 minutes); rows from before this keep the old
@@ -179,6 +181,13 @@ testimony every time; qwen3.8 obeyed the rules into paralysis and never delivere
 (80B)** followed the format, quoted the record, and passed the guard in four minutes - despite the name,
 it is the newest and largest model on the machine. `.pi/workflows/prep-probe-*.yaml` are the probes;
 the models must be registered in `~/.pi/agent/models.json` for an explicit `model:` to validate.
+`deposition-prep` therefore runs its answer-preparation step (Predicted cross-exam mode only) on its
+`prep_model` param. Its default is "Local model box": the step runs on the app's Local model like every
+other step (`qwen3.6:35b-mlx` today), which has not been put through the witness-preparation probe yet.
+Choose `ollama/qwen3-coder-next:q4_K_M` to run it on the model that passed the probe; that model has to be
+installed in Ollama to run. Either way the typed witness-coaching guard still checks every answer-prep
+result before it ships. pi-agents does not fill params into `model:`, so the YAML switches between two
+copies of that step.
 
 **Local-model rule of thumb:** pi-agents requires every agent to finish by calling
 `pi_agents_submit_result`; local models drop that when the prompt gets very large. Keep each node's
