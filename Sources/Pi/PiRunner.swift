@@ -282,20 +282,31 @@ final class PiRunner: ObservableObject {
     /// Give up on a launch the extension never answers (see `LaunchWatchdog`).
     private func armLaunchWatchdog(command: String, runId: String) {
         launchWatchdog?.cancel()
-        let started = Date()
+        // Monotonic, like Task.sleep: a wall-clock step (NTP) can neither end the wait early
+        // nor make it read as not yet due and exit, leaving "Launching workflow…" up for good.
+        let clock = ContinuousClock()
+        let started = clock.now
         launchWatchdog = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .seconds(LaunchWatchdog.timeout))
-            guard !Task.isCancelled, let self, self.activeRunId == runId else { return }
-            let live = self.store?.run(id: runId)?.isLive == true && self.activeRunWentLive
-            switch LaunchWatchdog.verdict(elapsed: Date().timeIntervalSince(started), replied: self.launchReplied, runWentLive: live, command: command) {
-            case .timedOut(let message):
-                self.errorMessage = message
-                self.status = "Could not launch"
-                self.finishActiveProcess()
-                self.activeRunId = nil
-                self.refresh()
-            case .keepWaiting, .done:
-                break
+            var wait = LaunchWatchdog.timeout
+            while true {
+                try? await Task.sleep(for: .seconds(wait), clock: clock)
+                guard !Task.isCancelled, let self, self.activeRunId == runId else { return }
+                let live = self.store?.run(id: runId)?.isLive == true && self.activeRunWentLive
+                let elapsed = LaunchWatchdog.seconds(clock.now - started)
+                switch LaunchWatchdog.verdict(elapsed: elapsed, replied: self.launchReplied, runWentLive: live, command: command) {
+                case .timedOut(let message):
+                    self.errorMessage = message
+                    self.status = "Could not launch"
+                    self.finishActiveProcess()
+                    self.activeRunId = nil
+                    self.refresh()
+                    return
+                case .done:
+                    return
+                case .keepWaiting:
+                    // Woke early: wait out the rest instead of giving up silently.
+                    wait = LaunchWatchdog.remaining(elapsed: elapsed)
+                }
             }
         }
     }

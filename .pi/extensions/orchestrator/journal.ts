@@ -218,6 +218,8 @@ export function buildResumeFlow(run: RunRow, completed: Map<number, unknown>, ov
 
 /** Whether a process with this pid exists (EPERM: it exists but is not ours). */
 export function processAlive(pid: number): boolean {
+  // 0 and negative pids name process groups, so kill(pid, 0) would "succeed" for them.
+  if (!Number.isInteger(pid) || pid <= 0) return false;
   try {
     process.kill(pid, 0);
     return true;
@@ -274,8 +276,12 @@ export type Reply = Record<string, unknown> & { ok: boolean; op: string };
 export class Journal {
   private readonly headers = new Map<string, RunHeader>();
   private readonly piToLocal = new Map<string, string>();
-  /** Set while a resume's `start` is in flight, so its `run_created` lands on the run being resumed. */
-  private pendingResume: { runId: string; label: string; resumeOffset: number; attachedTo?: string } | undefined;
+  /** Local run ids with a resume in flight in this Pi, reserved before the first await. */
+  private readonly resuming = new Set<string>();
+  /** Resumes whose `start` is in flight, by local run id, so each `run_created` lands on the run being resumed. */
+  private readonly pendingResumes = new Map<string, { runId: string; label: string; resumeOffset: number; attachedTo?: string }>();
+  /** pi-agents run ids whose run_completed has been seen, so a late `start` reply cannot revive them. */
+  private readonly finishedPi = new Set<string>();
   readonly pid: number;
   private readonly pidAlive: (pid: number) => boolean;
   private readonly now: () => number;
@@ -302,6 +308,24 @@ export class Journal {
     if (ids.length) this.store()?.heartbeat(ids, this.pid);
   }
 
+  /**
+   * A new copy of this extension in the same Pi (after a reload or session
+   * switch) starts with an empty run map. Take back the runs this process still
+   * drives so their heartbeat keeps going. Only call this when an earlier copy
+   * ran in this process: in a fresh process a matching owner_pid is a reused pid.
+   */
+  adopt(store?: RunStore): number {
+    const db = store ?? this.store();
+    if (!db) return 0;
+    let n = 0;
+    for (const row of db.liveRunsOwnedBy(this.pid)) {
+      if (!row.pi_run_id || this.finishedPi.has(row.pi_run_id)) continue;
+      this.piToLocal.set(row.pi_run_id, row.id);
+      n++;
+    }
+    return n;
+  }
+
   /** Pi is shutting down: nothing drives its runs any more. */
   release(): void {
     this.store()?.releaseOwnedRuns(this.pid);
@@ -319,8 +343,9 @@ export class Journal {
       // pi-agents emits run_created inside `start`, before its reply. For a resume
       // that is the resumed run; an inline resume flow carries no run_id param, so
       // without this it used to get a junk "inline … (resumed)" row of its own.
-      const pending = this.pendingResume;
-      if (pending && !pending.attachedTo && event.run.label === pending.label) {
+      // Map order is start order, so two same-titled resumes attach first-come first-served.
+      const pending = [...this.pendingResumes.values()].find((p) => !p.attachedTo && p.label === event.run!.label);
+      if (pending) {
         pending.attachedTo = piRunId;
         db.markResumed(pending.runId, piRunId, pending.resumeOffset, this.pid);
         this.piToLocal.set(piRunId, pending.runId);
@@ -412,7 +437,11 @@ export class Journal {
         db.cancelPendingCheckpoints(run.id, `Workflow ${status}.`);
       }
       this.headers.delete(event.runId ?? "");
-      if (event.runId) this.piToLocal.delete(event.runId);
+      if (event.runId) {
+        this.piToLocal.delete(event.runId);
+        this.finishedPi.add(event.runId);
+        if (this.finishedPi.size > 1000) this.finishedPi.delete(this.finishedPi.values().next().value!);
+      }
     }
   }
 
@@ -435,8 +464,11 @@ export class Journal {
     db.appendEvent({ runId: row.id, type: "queued", summary: `Queued ${workflow}` });
     try {
       const started = await this.agents.start({ workflow, params, label: title });
-      db.markStarted(row.id, started.runId, this.pid);
-      this.piToLocal.set(started.runId, row.id);
+      // A run that failed at once can report run_completed before `start` replies; leave it finished.
+      if (!this.finishedPi.has(started.runId)) {
+        db.markStarted(row.id, started.runId, this.pid);
+        this.piToLocal.set(started.runId, row.id);
+      }
       return { ok: true, op: "start", runId: row.id, piRunId: started.runId, warnings: started.warnings ?? [] };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -448,30 +480,49 @@ export class Journal {
 
   async resume(db: RunStore, input: Record<string, unknown>): Promise<Reply> {
     const runId = typeof input.runId === "string" ? input.runId : "";
-    const row = db.getRun(runId);
-    if (!row) throw new Error(`unknown run '${runId}'`);
-    if (row.status === "completed") throw new Error("run already completed");
-    const ownedHere = this.liveRunIds().includes(row.id) || this.pendingResume?.runId === row.id;
-    const busyNow = () =>
-      stillRunningReason(db.getRun(row.id) ?? row, { selfPid: this.pid, ownedHere, now: this.now(), pidAlive: this.pidAlive });
-    let busy = busyNow();
-    // The app stops the old Pi right before it resumes; give that process a moment to exit.
-    for (const deadline = Date.now() + this.ownerExitWaitMs; busy && !ownedHere && Date.now() < deadline; busy = busyNow()) {
-      await new Promise((r) => setTimeout(r, 250));
+    const first = db.getRun(runId);
+    if (!first) throw new Error(`unknown run '${runId}'`);
+    if (first.status === "completed") throw new Error("run already completed");
+    const ownedHere = () => this.resuming.has(runId) || this.liveRunIds().includes(runId);
+    if (ownedHere()) throw new Error(`not resumed: ${stillRunningReason(first, { selfPid: this.pid, ownedHere: true, now: this.now(), pidAlive: this.pidAlive })}.`);
+    // Reserved before the first await: a second resume of this run in this Pi is refused above.
+    this.resuming.add(runId);
+    try {
+      const busyNow = () =>
+        stillRunningReason(db.getRun(runId) ?? first, { selfPid: this.pid, ownedHere: false, now: this.now(), pidAlive: this.pidAlive });
+      let busy = busyNow();
+      // The app stops the old Pi right before it resumes; give that process a moment to exit.
+      for (const deadline = Date.now() + this.ownerExitWaitMs; busy && Date.now() < deadline; busy = busyNow()) {
+        await new Promise((r) => setTimeout(r, 250));
+      }
+      if (busy) throw new Error(`not resumed: ${busy}.`);
+      // The previous Pi may have finished (or resumed) the run while we waited: decide on the row as it is now.
+      const row = db.getRun(runId);
+      if (!row) throw new Error(`unknown run '${runId}'`);
+      if (row.status === "completed") throw new Error("run already completed");
+      return await this.startResume(db, row, input);
+    } finally {
+      this.resuming.delete(runId);
     }
-    if (busy) throw new Error(`not resumed: ${busy}.`);
+  }
+
+  private async startResume(db: RunStore, row: RunRow, input: Record<string, unknown>): Promise<Reply> {
     const model = typeof input.model === "string" && input.model.trim() ? input.model.trim() : undefined;
     const { flow, resumeAt, resumeOffset, display } = buildResumeFlow(row, db.completedStepValues(row.id), db.stepOverrides(row.id));
     const nth = row.resumes + 1;
     const suffix = nth % 100 >= 11 && nth % 100 <= 13 ? "th" : nth % 10 === 1 ? "st" : nth % 10 === 2 ? "nd" : nth % 10 === 3 ? "rd" : "th";
     db.appendEvent({ runId: row.id, type: "resume", summary: `Resuming from step ${resumeAt + 1} (${nth}${suffix} resume${model ? ` on ${model}` : ""})` });
     const label = `${row.title} (resumed)`;
-    this.pendingResume = { runId: row.id, label, resumeOffset };
+    const pending: { runId: string; label: string; resumeOffset: number; attachedTo?: string } = { runId: row.id, label, resumeOffset };
+    this.pendingResumes.set(row.id, pending);
     try {
       const started = await this.agents.start({ flow, label, display });
       // run_created normally arrives inside `start` and has already claimed the row.
-      if (this.pendingResume.attachedTo !== started.runId) db.markResumed(row.id, started.runId, resumeOffset, this.pid);
-      this.piToLocal.set(started.runId, row.id);
+      // A resume that already reported run_completed stays finished.
+      if (!this.finishedPi.has(started.runId)) {
+        if (pending.attachedTo !== started.runId) db.markResumed(row.id, started.runId, resumeOffset, this.pid);
+        this.piToLocal.set(started.runId, row.id);
+      }
       if (model) db.setModel(row.id, model);
       return { ok: true, op: "resume", runId: row.id, piRunId: started.runId, resumeAt, model: model ?? row.model, warnings: started.warnings ?? [] };
     } catch (error) {
@@ -479,7 +530,7 @@ export class Journal {
       db.appendEvent({ runId: row.id, type: "start_failed", summary: `Could not resume — ${message}` });
       return { ok: false, op: "resume", runId: row.id, error: message };
     } finally {
-      this.pendingResume = undefined;
+      this.pendingResumes.delete(row.id);
     }
   }
 }

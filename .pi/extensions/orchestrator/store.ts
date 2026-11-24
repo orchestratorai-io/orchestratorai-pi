@@ -318,6 +318,13 @@ export class RunStore {
     for (const id of ids) stmt.run(at, id, ownerPid);
   }
 
+  /** Runs this Pi process still drives: it owns them and has neither finished nor released them. */
+  liveRunsOwnedBy(ownerPid: number): RunRow[] {
+    return this.db
+      .prepare("SELECT * FROM runs WHERE owner_pid = ? AND heartbeat_at IS NOT NULL AND pi_run_id IS NOT NULL AND status NOT IN ('completed', 'failed')")
+      .all(ownerPid) as unknown as RunRow[];
+  }
+
   /** The owning Pi is shutting down: its runs no longer have a live process behind them. */
   releaseOwnedRuns(ownerPid: number): void {
     this.db.prepare("UPDATE runs SET heartbeat_at = NULL WHERE owner_pid = ?").run(ownerPid);

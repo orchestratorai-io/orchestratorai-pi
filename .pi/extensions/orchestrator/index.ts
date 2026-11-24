@@ -29,8 +29,9 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { randomUUID } from "node:crypto";
 import { Type } from "typebox";
-import { RunStore, type RunRow } from "./store";
-import { HEARTBEAT_MS, Journal } from "./journal.ts";
+import type { RunStore, RunRow } from "./store";
+import { Journal } from "./journal.ts";
+import { ExtensionRuntime } from "./runtime.ts";
 import { DecisionClient, runRubric, type Rubric } from "./decisions/index.ts";
 import { attorneyGate, consoleAttached, gateRun, SKIPPED } from "./gate.ts";
 
@@ -101,21 +102,16 @@ function piAgentsBus(pi: any) {
 // -------------------------------------------------------------- extension
 
 export default function orchestrator(pi: any) {
-  let store: RunStore | undefined;
-  let projectDir: string | undefined;
   const agents = piAgentsBus(pi);
-  const journal = new Journal(() => store, agents);
-  // While this Pi drives a run, say so in the store every HEARTBEAT_MS. A run waiting
-  // hours at an attorney gate writes no journal events, and without this the app took
-  // that silence for a dead Pi and marked the run stopped.
-  const heartbeatTimer = setInterval(() => journal.heartbeat(), HEARTBEAT_MS);
-  heartbeatTimer.unref?.();
+  // The store link and the heartbeat timer are per process, not per copy of this
+  // extension: a reload or session switch loads a new copy while runs go on (runtime.ts).
+  let runtime: ExtensionRuntime | undefined;
+  const journal = new Journal(() => runtime?.store, agents);
+  runtime = new ExtensionRuntime(journal);
+  const rt = runtime;
 
   function openStore(cwd: string): RunStore {
-    if (store) return store;
-    projectDir = findProjectDir(cwd);
-    store = new RunStore(projectDir);
-    return store;
+    return rt.ensureStore(findProjectDir(cwd));
   }
 
   function reply(payload: Record<string, unknown>) {
@@ -126,7 +122,7 @@ export default function orchestrator(pi: any) {
   }
 
   pi.on("session_start", (_event: unknown, ctx: any) => {
-    openStore(ctx.cwd);
+    rt.sessionStore(findProjectDir(ctx.cwd));
     if (ctx?.hasUI) ctx.ui.setStatus("orchestratorai", "OrchestratorAI journal active");
   });
 
@@ -159,6 +155,7 @@ export default function orchestrator(pi: any) {
   }
   function flushLive() {
     liveFlushTimer = undefined;
+    const store = rt.store;
     if (store && liveSessionFile && livePending !== undefined) store.setProgress(liveSessionFile, livePending);
   }
   pi.on("agent_start", (_e: unknown, ctx: any) => {
@@ -177,11 +174,11 @@ export default function orchestrator(pi: any) {
 
   pi.on("session_shutdown", (event: any) => {
     if (liveFlushTimer) { clearTimeout(liveFlushTimer); flushLive(); }
-    // Only when Pi exits. A reload or session switch fires this too, and pi-agents runs go on.
-    if (event?.reason === "quit") journal.release();
-    if (store && liveSessionFile) store.clearProgress(liveSessionFile);
-    store?.close();
-    store = undefined;
+    if (liveSessionFile) rt.store?.clearProgress(liveSessionFile);
+    // Pi 0.85 reasons: "quit" ends the process; "reload", "new", "resume" and "fork" only
+    // replace this copy of the extension while pi-agents runs go on, so those keep the
+    // store and heartbeat for the next copy, which re-adopts this process's runs.
+    rt.shutdown(event?.reason);
   });
 
   // --------------------------------------------------- run event journal
@@ -200,7 +197,7 @@ export default function orchestrator(pi: any) {
       try {
         switch (sub) {
           case "ping": {
-            reply({ ok: true, op: "ping", store: db.path, projectDir });
+            reply({ ok: true, op: "ping", store: db.path, projectDir: rt.projectDir });
             return;
           }
           case "start": {

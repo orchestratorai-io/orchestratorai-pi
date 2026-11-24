@@ -123,6 +123,9 @@ struct ContentView: View {
             runner.attach(projectDirectory: projectDirectory)
             if let run = runner.selectedRun, workflows.contains(where: { $0.id == run.workflow }) {
                 selectedWorkflow = run.workflow
+                // attach() opened the newest run; fill its model as openRun does, or Resume on it
+                // would quietly switch to the default model.
+                model = ResumeModel.boxValue(opening: run, current: model)
             } else if let firstReady = workflows.first(where: \.isReady) {
                 selectedWorkflow = firstReady.id
             }
@@ -235,9 +238,7 @@ struct ContentView: View {
         }
         paramValues.merge(run.params) { _, stored in stored }
         // Show the run's own model, so Resume runs on it unless the attorney types another.
-        if let runModel = run.model, !runModel.trimmingCharacters(in: .whitespaces).isEmpty {
-            model = runModel
-        }
+        model = ResumeModel.boxValue(opening: run, current: model)
     }
 
     // MARK: Header and setup cards
