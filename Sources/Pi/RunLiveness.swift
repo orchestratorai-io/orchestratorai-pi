@@ -56,6 +56,20 @@ struct LaunchWatchdog {
         case timedOut(message: String)
     }
 
+    /// Re-check no sooner than this after an early wake, so a skewed clock cannot spin the loop.
+    static let minimumRecheck: TimeInterval = 0.5
+
+    /// How much longer to wait after waking early (`.keepWaiting`) instead of giving up silently.
+    static func remaining(elapsed: TimeInterval) -> TimeInterval {
+        max(timeout - elapsed, minimumRecheck)
+    }
+
+    /// Seconds in a `ContinuousClock` duration: monotonic, so a wall-clock change cannot cut the wait short.
+    static func seconds(_ duration: Duration) -> TimeInterval {
+        let parts = duration.components
+        return TimeInterval(parts.seconds) + TimeInterval(parts.attoseconds) / 1e18
+    }
+
     static func verdict(elapsed: TimeInterval, replied: Bool, runWentLive: Bool, command: String) -> Verdict {
         if replied || runWentLive { return .done }
         guard elapsed >= timeout else { return .keepWaiting }
@@ -75,5 +89,13 @@ enum ResumeModel {
         if !picked.isEmpty { return picked }
         if let runModel = runModel?.trimmingCharacters(in: .whitespacesAndNewlines), !runModel.isEmpty { return runModel }
         return fallback
+    }
+
+    /// What the "Local model" box should hold once `run` is open: the run's own model,
+    /// so Resume keeps it unless the attorney types another; otherwise what it held.
+    /// Used both when the attorney opens a run and for the run the app opens at launch.
+    static func boxValue(opening run: RunRecord?, current: String) -> String {
+        guard let runModel = run?.model?.trimmingCharacters(in: .whitespacesAndNewlines), !runModel.isEmpty else { return current }
+        return runModel
     }
 }
