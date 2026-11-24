@@ -51,18 +51,46 @@ enum PiEnvironment {
     /// Existing process environment wins over the file.
     static func dotEnv(projectDirectory: URL) -> [String: String] {
         guard let text = try? String(contentsOf: projectDirectory.appendingPathComponent(".env"), encoding: .utf8) else { return [:] }
+        return parseDotEnv(text)
+    }
+
+    /// `KEY=VALUE` lines as a shell would read them: an optional leading `export`,
+    /// a value in matching single or double quotes taken as written (anything after
+    /// the closing quote, such as a comment, dropped), and on an unquoted value a
+    /// `#` that starts the value or follows whitespace begins a comment. A `#` inside
+    /// a word (`abc#def`) stays, as it does in a shell.
+    static func parseDotEnv(_ text: String) -> [String: String] {
         var out: [String: String] = [:]
         for raw in text.components(separatedBy: .newlines) {
-            let line = raw.trimmingCharacters(in: .whitespaces)
-            guard !line.isEmpty, !line.hasPrefix("#"), let eq = line.firstIndex(of: "=") else { continue }
-            let key = String(line[..<eq]).trimmingCharacters(in: .whitespaces)
-            var value = String(line[line.index(after: eq)...]).trimmingCharacters(in: .whitespaces)
-            if value.count >= 2, (value.hasPrefix("\"") && value.hasSuffix("\"")) || (value.hasPrefix("'") && value.hasSuffix("'")) {
-                value = String(value.dropFirst().dropLast())
+            var line = raw.trimmingCharacters(in: .whitespaces)
+            guard !line.isEmpty, !line.hasPrefix("#") else { continue }
+            if line.hasPrefix("export "), let rest = line.split(separator: " ", maxSplits: 1).last {
+                line = String(rest).trimmingCharacters(in: .whitespaces)
+            } else if line.hasPrefix("export\t"), let rest = line.split(separator: "\t", maxSplits: 1).last {
+                line = String(rest).trimmingCharacters(in: .whitespaces)
             }
-            if !key.isEmpty { out[key] = value }
+            guard let eq = line.firstIndex(of: "=") else { continue }
+            let key = String(line[..<eq]).trimmingCharacters(in: .whitespaces)
+            let value = unquotedValue(String(line[line.index(after: eq)...]).trimmingCharacters(in: .whitespaces))
+            if !key.isEmpty, !key.contains(where: \.isWhitespace) { out[key] = value }
         }
         return out
+    }
+
+    private static func unquotedValue(_ value: String) -> String {
+        if let quote = value.first, quote == "\"" || quote == "'" {
+            let body = value.dropFirst()
+            if let close = body.firstIndex(of: quote) { return String(body[..<close]) }
+            return value   // no closing quote: keep it as written
+        }
+        var previous: Character = " "
+        for index in value.indices {
+            if value[index] == "#", previous.isWhitespace {
+                return String(value[..<index]).trimmingCharacters(in: .whitespaces)
+            }
+            previous = value[index]
+        }
+        return value
     }
 
     /// Same name as `CONSOLE_ENV` in `.pi/extensions/orchestrator/gate.ts`.

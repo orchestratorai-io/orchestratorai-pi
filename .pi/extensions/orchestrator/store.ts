@@ -191,6 +191,15 @@ CREATE TABLE IF NOT EXISTS step_overrides (
   at TEXT NOT NULL,
   PRIMARY KEY (run_id, step_index)
 );
+
+-- Written by the app (RunStore.swift): the attorney's ticks on a run's review checklist.
+CREATE TABLE IF NOT EXISTS review_checks (
+  run_id TEXT NOT NULL,
+  item_id TEXT NOT NULL,
+  checked INTEGER NOT NULL,       -- 1 ticked, 0 unticked
+  at TEXT NOT NULL,
+  PRIMARY KEY (run_id, item_id)
+);
 `;
 
 /** Columns added after the first release; applied idempotently at open. */

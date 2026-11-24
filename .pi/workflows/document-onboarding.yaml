@@ -98,4 +98,5 @@ flow:
         assumptions, and uncertainties.
 
         Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+      as: report
 display: report

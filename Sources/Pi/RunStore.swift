@@ -186,7 +186,43 @@ enum FinalReviewControl: Equatable {
     }
 }
 
-final class RunStore {
+/// Everything the app shows from the store, read in one go off the main thread
+/// (`PiRunner.refresh`) and published on it.
+struct RunSnapshot: Sendable {
+    var runs: [RunRecord] = []
+    var checkpointsByRun: [String: [CheckpointRecord]] = [:]
+    var evaluationCounts: [String: (block: Int, review: Int, pass: Int)] = [:]
+    /// The selection the per-run lists below were read for.
+    var selectedRunId: String?
+    var events: [RunEventRecord] = []
+    var stepOutputs: [RunStore.StepOutput] = []
+    var liveText: [RunStore.LiveText] = []
+    var evaluations: [EvaluationRecord] = []
+    var reviewChecks: [String: Bool] = [:]
+
+    /// A fixed number of queries whatever the number of runs (checkpoints come in one SELECT).
+    static func load(from store: RunStore, selectedRunId: String?) -> RunSnapshot {
+        var snapshot = RunSnapshot(selectedRunId: selectedRunId)
+        // Model experiments stay in the store (hidden, not deleted); only the buyer's lists skip them.
+        snapshot.runs = store.runs().filter { !LegalWorkflowCatalog.isHiddenFromRunList($0) }
+        let all = store.checkpointsByRun()
+        for run in snapshot.runs { snapshot.checkpointsByRun[run.id] = all[run.id] ?? [] }
+        snapshot.evaluationCounts = store.evaluationSummary()
+        if let selectedRunId {
+            snapshot.events = store.events(runId: selectedRunId)
+            snapshot.stepOutputs = store.stepOutputs(runId: selectedRunId)
+            snapshot.liveText = store.liveText(runId: selectedRunId)
+            snapshot.evaluations = store.evaluations(runId: selectedRunId)
+            snapshot.reviewChecks = store.reviewChecks(runId: selectedRunId)
+        }
+        return snapshot
+    }
+}
+
+/// `@unchecked Sendable`: the connection is opened `SQLITE_OPEN_FULLMUTEX`, so SQLite
+/// serialises every call on it. The app still gives its background reads a connection
+/// of their own (see `PiRunner`), so they never land inside a write transaction.
+final class RunStore: @unchecked Sendable {
     private var db: OpaquePointer?
     let path: String
 
@@ -200,11 +236,48 @@ final class RunStore {
         exec("PRAGMA journal_mode = WAL;")
         exec("PRAGMA busy_timeout = 5000;")
         exec(Self.schema)
-        // Columns newer than the file may be: added here too, so the app can read liveness
-        // before Pi has opened an older store. Fails harmlessly when the column exists.
-        exec("ALTER TABLE runs ADD COLUMN owner_pid INTEGER;")
-        exec("ALTER TABLE runs ADD COLUMN heartbeat_at TEXT;")
-        exec("ALTER TABLE runs ADD COLUMN resume_rebinds INTEGER NOT NULL DEFAULT 0;")
+        migrate()
+    }
+
+    /// Columns added after the first release, the same list as `MIGRATIONS` in
+    /// store.ts. `CREATE TABLE IF NOT EXISTS` leaves an older file's tables as they
+    /// were, so without these the app reading a store Pi has not opened since an
+    /// upgrade found no `step_index`/`value_json` and showed no step outputs.
+    static let migrations: [(table: String, column: String, ddl: String)] = [
+        ("runs", "flow_json", "ALTER TABLE runs ADD COLUMN flow_json TEXT"),
+        ("runs", "display", "ALTER TABLE runs ADD COLUMN display TEXT"),
+        ("runs", "resume_offset", "ALTER TABLE runs ADD COLUMN resume_offset INTEGER NOT NULL DEFAULT 0"),
+        ("runs", "resumes", "ALTER TABLE runs ADD COLUMN resumes INTEGER NOT NULL DEFAULT 0"),
+        ("run_events", "value_json", "ALTER TABLE run_events ADD COLUMN value_json TEXT"),
+        ("run_events", "step_index", "ALTER TABLE run_events ADD COLUMN step_index INTEGER"),
+        ("runs", "owner_pid", "ALTER TABLE runs ADD COLUMN owner_pid INTEGER"),
+        ("runs", "heartbeat_at", "ALTER TABLE runs ADD COLUMN heartbeat_at TEXT"),
+        ("runs", "origin", "ALTER TABLE runs ADD COLUMN origin TEXT"),
+        ("runs", "resume_rebinds", "ALTER TABLE runs ADD COLUMN resume_rebinds INTEGER NOT NULL DEFAULT 0"),
+    ]
+
+    /// Applies `migrations` idempotently, in one write transaction so a Pi opening the
+    /// store at the same moment takes turns with the app instead of racing on a column.
+    /// A column the other side added in the meantime makes the ALTER fail harmlessly.
+    private func migrate() {
+        exec("BEGIN IMMEDIATE;")
+        for m in Self.migrations where !columns(of: m.table).contains(m.column) {
+            exec(m.ddl + ";")
+        }
+        exec("COMMIT;")
+    }
+
+    func columns(of table: String) -> Set<String> {
+        Set(query("PRAGMA table_info(\(table))") { Self.text($0, named: "name") })
+    }
+
+    /// An ISO-8601 time with milliseconds, like Node's `toISOString()`. Node writes
+    /// `…00.123Z`; a bare `…00Z` sorts after it within the same second (`.` < `Z`),
+    /// which put the app's writes out of order against Pi's in `ORDER BY` on text.
+    static func timestamp(_ date: Date = Date()) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.string(from: date)
     }
 
     deinit {
@@ -252,6 +325,10 @@ final class RunStore {
       run_id TEXT NOT NULL, step_index INTEGER NOT NULL, value_json TEXT NOT NULL, note TEXT, at TEXT NOT NULL,
       PRIMARY KEY (run_id, step_index)
     );
+    CREATE TABLE IF NOT EXISTS review_checks (
+      run_id TEXT NOT NULL, item_id TEXT NOT NULL, checked INTEGER NOT NULL, at TEXT NOT NULL,
+      PRIMARY KEY (run_id, item_id)
+    );
     """
 
     // MARK: Reads
@@ -281,6 +358,11 @@ final class RunStore {
 
     func checkpoints(runId: String) -> [CheckpointRecord] {
         query("SELECT * FROM checkpoints WHERE run_id = ? ORDER BY requested_at", bind: [runId]) { Self.checkpoint(from: $0) }
+    }
+
+    /// Every run's checkpoints, in request order, from one query.
+    func checkpointsByRun() -> [String: [CheckpointRecord]] {
+        Dictionary(grouping: query("SELECT * FROM checkpoints ORDER BY run_id, requested_at") { Self.checkpoint(from: $0) }, by: \.runId)
     }
 
     func pendingCheckpoints() -> [CheckpointRecord] {
@@ -351,7 +433,7 @@ final class RunStore {
 
     @discardableResult
     func decide(checkpointId: String, status: String, comment: String) -> Bool {
-        let now = ISO8601DateFormatter().string(from: Date())
+        let now = Self.timestamp()
         return execute(
             "UPDATE checkpoints SET status = ?, decision_comment = ?, decided_at = ? WHERE id = ? AND status = 'pending'",
             bind: [status, comment, now, checkpointId]
@@ -364,7 +446,7 @@ final class RunStore {
     /// nothing is added while a final review is already pending.
     @discardableResult
     func reopenFinalReview(runId: String) -> Bool {
-        let now = ISO8601DateFormatter().string(from: Date())
+        let now = Self.timestamp()
         return execute(
             """
             INSERT INTO checkpoints (id, run_id, kind, title, summary_markdown, status, requested_at)
@@ -384,7 +466,7 @@ final class RunStore {
     }
 
     /// Deletes everything the store holds for one run, in one transaction: its journal,
-    /// gates, evaluations, step edits, workflow state and its agents' live text. For a
+    /// gates, evaluations, step edits, checklist ticks, workflow state and its agents' live text. For a
     /// legal app "Delete" has to delete; the run's session files on disk are removed by
     /// `SessionFiles.remove` (the caller collects them with `sessionFiles(runId:)` first).
     @discardableResult
@@ -395,6 +477,7 @@ final class RunStore {
             bind: [id]
         )
             && execute("DELETE FROM step_overrides WHERE run_id = ?", bind: [id])
+            && execute("DELETE FROM review_checks WHERE run_id = ?", bind: [id])
             && execute("DELETE FROM run_state WHERE run_id = ?", bind: [id])
             && execute("DELETE FROM run_events WHERE run_id = ?", bind: [id])
             && execute("DELETE FROM checkpoints WHERE run_id = ?", bind: [id])
@@ -409,7 +492,7 @@ final class RunStore {
     /// the idempotent attorney_review tool picks the existing checkpoint back up.
     @discardableResult
     func markOrphaned(runId: String, message: String) -> Bool {
-        let now = ISO8601DateFormatter().string(from: Date())
+        let now = Self.timestamp()
         return execute(
             "UPDATE runs SET status = 'stopped', error = ?, completed_at = ?, updated_at = ? WHERE id = ? AND status IN ('queued','running')",
             bind: [message, now, now, runId]
@@ -432,10 +515,30 @@ final class RunStore {
 
     @discardableResult
     func cancelPendingCheckpoints(runId: String, reason: String) -> Bool {
-        let now = ISO8601DateFormatter().string(from: Date())
+        let now = Self.timestamp()
         return execute(
             "UPDATE checkpoints SET status = 'cancelled', decision_comment = ?, decided_at = ? WHERE run_id = ? AND status = 'pending'",
             bind: [reason, now, runId]
+        )
+    }
+
+    // MARK: Attorney checklist
+
+    /// The attorney's ticks on a run's review checklist, by item id: true ticked,
+    /// false unticked (an item the report had ticked that the attorney cleared).
+    func reviewChecks(runId: String) -> [String: Bool] {
+        let rows: [(String, Bool)] = query("SELECT item_id, checked FROM review_checks WHERE run_id = ?", bind: [runId]) { stmt in
+            guard let item = Self.text(stmt, 0) else { return nil }
+            return (item, sqlite3_column_int64(stmt, 1) != 0)
+        }
+        return Dictionary(rows, uniquingKeysWith: { _, last in last })
+    }
+
+    @discardableResult
+    func setReviewCheck(runId: String, itemId: String, checked: Bool) -> Bool {
+        execute(
+            "INSERT OR REPLACE INTO review_checks (run_id, item_id, checked, at) VALUES (?, ?, ?, ?)",
+            bind: [runId, itemId, checked ? "1" : "0", Self.timestamp()]
         )
     }
 
@@ -451,12 +554,15 @@ final class RunStore {
 
     /// What each still-running agent of a run is writing right now. Children write
     /// run_progress keyed by their session file; the parent's node_session event carries it.
+    /// Only sessions opened since the run's latest resume count: an agent killed by a
+    /// crash never journals node_completed, and its last text would otherwise show as live.
     func liveText(runId: String) -> [LiveText] {
         query(
             """
             SELECT e.detail, e.label, p.text, p.updated_at
             FROM run_events e JOIN run_progress p ON p.session_file = e.detail
             WHERE e.run_id = ? AND e.type = 'node_session'
+              AND e.seq > COALESCE((SELECT MAX(r.seq) FROM run_events r WHERE r.run_id = e.run_id AND r.type = 'resume'), 0)
               AND NOT EXISTS (SELECT 1 FROM run_events d WHERE d.run_id = e.run_id AND d.node_instance = e.node_instance
                               AND d.type IN ('node_completed','node_failed','node_cancelled') AND d.seq > e.seq)
             ORDER BY p.updated_at DESC
@@ -528,7 +634,7 @@ final class RunStore {
     @discardableResult
     func setStepOverride(runId: String, stepIndex: Int, text: String, note: String?) -> Bool {
         guard let json = Self.overrideJSON(for: text) else { return false }
-        let now = ISO8601DateFormatter().string(from: Date())
+        let now = Self.timestamp()
         return execute(
             "INSERT OR REPLACE INTO step_overrides (run_id, step_index, value_json, note, at) VALUES (?, ?, ?, ?, ?)",
             bind: [runId, String(stepIndex), json, note, now]

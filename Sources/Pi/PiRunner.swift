@@ -8,11 +8,24 @@ import Foundation
 final class PiRunner: ObservableObject {
     @Published var runs: [RunRecord] = []
     @Published var checkpointsByRun: [String: [CheckpointRecord]] = [:]
-    @Published var selectedRunId: String?
+    @Published var selectedRunId: String? {
+        didSet {
+            // Reads are off the main thread now: until the new run's arrive, show
+            // nothing rather than the previous run's journal under the new title.
+            guard selectedRunId != oldValue else { return }
+            events = []
+            stepOutputs = []
+            liveText = []
+            evaluations = []
+            reviewChecks = [:]
+        }
+    }
     @Published var events: [RunEventRecord] = []
     @Published var evaluations: [EvaluationRecord] = []
     @Published var stepOutputs: [RunStore.StepOutput] = []
     @Published var liveText: [RunStore.LiveText] = []
+    /// The selected run's saved checklist ticks (see `AttorneyReviewItem.reviewedIDs`).
+    @Published var reviewChecks: [String: Bool] = [:]
     @Published var evaluationCounts: [String: (block: Int, review: Int, pass: Int)] = [:]
     @Published var status = "Ready"
     @Published var isRunning = false
@@ -75,31 +88,62 @@ final class PiRunner: ObservableObject {
     func attach(projectDirectory: URL) {
         self.projectDirectory = projectDirectory
         store = RunStore(projectDirectory: projectDirectory)
+        // Background reads get their own connection: the app's writes (decisions, Stop,
+        // Delete) run in transactions on `store`, and a read must not land inside one.
+        reader = store == nil ? nil : RunStore(projectDirectory: projectDirectory)
         storeUnavailable = store == nil
         markOrphanedRuns()
-        refresh()
-        if selectedRunId == nil { selectedRunId = runs.first?.id }
+        // Once, synchronously, so the first selection below sees the runs.
+        if let store { apply(RunSnapshot.load(from: store, selectedRunId: selectedRunId)) }
+        if selectedRunId == nil, let first = runs.first?.id { select(runId: first) }
         schedulePolling()
     }
 
+    /// Re-reads the store off the main thread and publishes it. A run streaming text
+    /// asks for this several times a second; at most one read is in flight and one
+    /// more queued, so bursts collapse instead of piling up.
     func refresh() {
-        guard let store else { return }
-        // Model experiments stay in the store (hidden, not deleted); only the buyer's lists skip them.
-        runs = store.runs().filter { !LegalWorkflowCatalog.isHiddenFromRunList($0) }
-        var map: [String: [CheckpointRecord]] = [:]
-        for run in runs { map[run.id] = store.checkpoints(runId: run.id) }
-        checkpointsByRun = map
-        evaluationCounts = store.evaluationSummary()
-        if let selectedRunId {
-            events = store.events(runId: selectedRunId)
-            stepOutputs = store.stepOutputs(runId: selectedRunId)
-            liveText = store.liveText(runId: selectedRunId)
-            evaluations = store.evaluations(runId: selectedRunId)
+        guard let reader else { return }
+        if readInFlight {
+            readQueued = true
+            return
+        }
+        readInFlight = true
+        let selected = selectedRunId
+        Self.readQueue.async {
+            let snapshot = RunSnapshot.load(from: reader, selectedRunId: selected)
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    self.readInFlight = false
+                    self.apply(snapshot)
+                    if self.readQueued {
+                        self.readQueued = false
+                        self.refresh()
+                    }
+                }
+            }
+        }
+    }
+
+    private static let readQueue = DispatchQueue(label: "ai.orchestrator.pi.store-reads", qos: .userInitiated)
+    private var reader: RunStore?
+    private var readInFlight = false
+    private var readQueued = false
+
+    private func apply(_ snapshot: RunSnapshot) {
+        runs = snapshot.runs
+        checkpointsByRun = snapshot.checkpointsByRun
+        evaluationCounts = snapshot.evaluationCounts
+        // Lists read for a run that is no longer selected would show under the wrong
+        // run; changing the selection cleared them, and the queued read brings the new ones.
+        if snapshot.selectedRunId == selectedRunId {
+            events = snapshot.events
+            stepOutputs = snapshot.stepOutputs
+            liveText = snapshot.liveText
+            evaluations = snapshot.evaluations
+            reviewChecks = snapshot.reviewChecks
         } else {
-            events = []
-            stepOutputs = []
-            liveText = []
-            evaluations = []
+            readQueued = true
         }
         if let activeRunId, let run = runs.first(where: { $0.id == activeRunId }) {
             let state = reviewState(for: run)
@@ -112,6 +156,8 @@ final class PiRunner: ObservableObject {
             if state.isLive {
                 activeRunWentLive = true
             } else if activeRunWentLive {
+                // finishActiveProcess also lets go of the run: left set, every later
+                // refresh kept writing this finished run's state into `status`.
                 finishActiveProcess()
             }
         }
@@ -349,6 +395,7 @@ final class PiRunner: ObservableObject {
         inputPipe = nil
         outputPipe = nil
         isRunning = false
+        activeRunId = nil
     }
 
 
@@ -366,6 +413,13 @@ final class PiRunner: ObservableObject {
     /// "Approved by attorney." is ever added to the text.
     nonisolated static func decision(approved: Bool, comment: String) -> (status: String, comment: String) {
         (approved ? "approved" : "changes_requested", comment.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    /// The attorney ticked or unticked a checklist item; shown at once, saved in the store.
+    func setReviewed(runId: String, itemId: String, reviewed: Bool) {
+        if runId == selectedRunId { reviewChecks[itemId] = reviewed }
+        store?.setReviewCheck(runId: runId, itemId: itemId, checked: reviewed)
+        refresh()
     }
 
     func overrideStep(runId: String, stepIndex: Int, text: String, note: String?) {

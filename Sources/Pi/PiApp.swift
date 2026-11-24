@@ -8,6 +8,39 @@ struct AttorneyReviewItem: Identifiable, Hashable {
     let id: String
     let text: String
     let severity: String?
+    /// The report already had it ticked (`- [x]`).
+    var checkedInReport = false
+
+    /// Which items show as reviewed: the attorney's saved tick or untick
+    /// (`review_checks`) where there is one, otherwise what the report said.
+    static func reviewedIDs(_ items: [AttorneyReviewItem], saved: [String: Bool]) -> Set<String> {
+        Set(items.filter { saved[$0.id] ?? $0.checkedInReport }.map(\.id))
+    }
+}
+
+/// What the launch card's source box shows for the chosen file or folder.
+enum SourcePreview: Equatable {
+    case text(String)
+    /// A folder's visible entries, sorted, subfolders ending in "/"; `more` counts those not listed.
+    case folder(entries: [String], more: Int)
+    case unreadable
+
+    static func load(_ url: URL, maxEntries: Int = 200) -> SourcePreview {
+        var isDirectory: ObjCBool = false
+        if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue {
+            let urls = (try? FileManager.default.contentsOfDirectory(
+                at: url, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]
+            )) ?? []
+            let names = urls.map { entry in
+                let folder = (try? entry.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true
+                return entry.lastPathComponent + (folder ? "/" : "")
+            }
+            .sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+            return .folder(entries: Array(names.prefix(maxEntries)), more: max(0, names.count - maxEntries))
+        }
+        if let text = try? String(contentsOf: url, encoding: .utf8) { return .text(text) }
+        return .unreadable
+    }
 }
 
 @main
@@ -34,7 +67,6 @@ struct ContentView: View {
     @State private var model = ContentView.defaultModel
     @State private var selectedWorkflow = "contract-review"
     @State private var showingActivity = false
-    @State private var reviewedIssueIDs: Set<String> = []
     @State private var reviewDecisionComment = ""
     @State private var gateDecisionComment = ""
     @State private var runPendingDeletion: RunRecord?
@@ -142,7 +174,6 @@ struct ContentView: View {
             // fires later) keeps the params openRun filled in from the run; anything else is a
             // fresh launch card for the new workflow.
             guard !DetailSelection.isOpening(runner.selectedRun, workflow: selectedWorkflow) else { return }
-            reviewedIssueIDs = []
             reviewDecisionComment = ""
             gateDecisionComment = ""
             selectedFile = nil
@@ -222,7 +253,6 @@ struct ContentView: View {
 
     /// "New run" in the list: drop the open run so the detail shows the bare launch card.
     private func startNewRun() {
-        reviewedIssueIDs = []
         reviewDecisionComment = ""
         gateDecisionComment = ""
         selectedFile = nil
@@ -231,7 +261,6 @@ struct ContentView: View {
     }
 
     private func openRun(_ run: RunRecord) {
-        reviewedIssueIDs = []
         reviewDecisionComment = ""
         gateDecisionComment = ""
         selectedWorkflow = run.workflow
@@ -550,7 +579,6 @@ struct ContentView: View {
             params[launch.fileParam] = selectedFile.path
             source = selectedFile.path
         }
-        reviewedIssueIDs = []
         reviewDecisionComment = ""
         gateDecisionComment = ""
         runner.start(workflow: workflow, params: params, sourceDocument: source, model: model)
@@ -642,6 +670,7 @@ struct ContentView: View {
     private var attorneyReviewItems: [AttorneyReviewItem] {
         Self.parseAttorneyItems(from: finalMarkdown)
     }
+
 
     private var resultCard: some View {
         GroupBox {
@@ -742,7 +771,9 @@ struct ContentView: View {
 
     private var attorneyReviewCard: some View {
         let items = attorneyReviewItems
-        let reviewedCount = reviewedIssueIDs.intersection(Set(items.map(\.id))).count
+        // Ticks are saved in the store per run, so they survive opening another run or quitting.
+        let reviewedIssueIDs = AttorneyReviewItem.reviewedIDs(items, saved: runner.reviewChecks)
+        let reviewedCount = reviewedIssueIDs.count
         let copy = activeWorkflow?.launch?.review ?? LaunchReviewCopy()
         return GroupBox {
             VStack(alignment: .leading, spacing: 12) {
@@ -788,10 +819,8 @@ struct ContentView: View {
                     VStack(alignment: .leading, spacing: 8) {
                         ForEach(items) { item in
                             Button {
-                                if reviewedIssueIDs.contains(item.id) {
-                                    reviewedIssueIDs.remove(item.id)
-                                } else {
-                                    reviewedIssueIDs.insert(item.id)
+                                if let run = displayedRun {
+                                    runner.setReviewed(runId: run.id, itemId: item.id, reviewed: !reviewedIssueIDs.contains(item.id))
                                 }
                             } label: {
                                 HStack(alignment: .top, spacing: 8) {
@@ -833,7 +862,9 @@ struct ContentView: View {
 
     private var humanReviewCard: some View {
         let items = attorneyReviewItems
-        let reviewedCount = reviewedIssueIDs.intersection(Set(items.map(\.id))).count
+        // Ticks are saved in the store per run, so they survive opening another run or quitting.
+        let reviewedIssueIDs = AttorneyReviewItem.reviewedIDs(items, saved: runner.reviewChecks)
+        let reviewedCount = reviewedIssueIDs.count
         let allReviewed = items.isEmpty || reviewedCount == items.count
         let copy = activeWorkflow?.launch?.review ?? LaunchReviewCopy()
 
@@ -977,8 +1008,8 @@ struct ContentView: View {
     private var sourceDocumentBox: some View {
         GroupBox {
             DisclosureGroup {
-                if let selectedFile,
-                   let source = try? String(contentsOf: selectedFile, encoding: .utf8) {
+                switch selectedFile.map({ SourcePreview.load($0) }) {
+                case .text(let source):
                     ScrollView {
                         Text(source)
                             .font(.system(.body, design: .serif))
@@ -989,7 +1020,30 @@ struct ContentView: View {
                     .frame(minHeight: 120, maxHeight: 300)
                     .background(Color(nsColor: .textBackgroundColor))
                     .clipShape(RoundedRectangle(cornerRadius: 8))
-                } else {
+                case .folder(let entries, let more):
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 3) {
+                            if entries.isEmpty {
+                                Text("This folder is empty.")
+                                    .foregroundStyle(.secondary)
+                            }
+                            ForEach(entries, id: \.self) { name in
+                                Label(name, systemImage: name.hasSuffix("/") ? "folder" : "doc")
+                            }
+                            if more > 0 {
+                                Text("… and \(more) more")
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .font(.callout)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(14)
+                    }
+                    .frame(minHeight: 120, maxHeight: 300)
+                    .background(Color(nsColor: .textBackgroundColor))
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                case .unreadable, nil:
                     Text(selectedFile == nil
                          ? "Choose a readable text or Markdown \(activeWorkflow?.fileLabel ?? "document") to preview it here."
                          : "This file could not be previewed as UTF-8 text (binary/PDF previews are not shown). The workflow can still use the path if the runtime supports it.")
@@ -997,9 +1051,11 @@ struct ContentView: View {
                         .foregroundStyle(.secondary)
                 }
             } label: {
+                let isFolder = activeWorkflow?.launch?.inputKind == .folder
+                let noun = isFolder ? "Source folder" : "Source document"
                 Label(
-                    selectedFile == nil ? "Source document" : "Source document — \(selectedFile?.deletingPathExtension().lastPathComponent ?? "")",
-                    systemImage: "doc.plaintext"
+                    selectedFile == nil ? noun : "\(noun) — \(selectedFile?.deletingPathExtension().lastPathComponent ?? "")",
+                    systemImage: isFolder ? "folder" : "doc.plaintext"
                 )
                 .font(.headline)
             }
@@ -1078,28 +1134,45 @@ struct ContentView: View {
 
     // MARK: Parsing helpers
 
-    static func parseAttorneyItems(from markdown: String) -> [AttorneyReviewItem] {
-        var inQueue = false
+    /// The checklist under the report's "Attorney review focus" (or intake focus, or
+    /// "Issues requiring attorney review") heading. Subheadings inside the section
+    /// are part of it; the section ends at the next heading of the same or a higher
+    /// level. `- [x]` items come through ticked.
+    nonisolated static func parseAttorneyItems(from markdown: String) -> [AttorneyReviewItem] {
+        var sectionLevel: Int?
         var items: [AttorneyReviewItem] = []
         for line in markdown.components(separatedBy: .newlines) {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if trimmed.range(of: "^#{1,6}\\s+Attorney (review|intake) focus", options: [.regularExpression, .caseInsensitive]) != nil ||
-                trimmed.range(of: "^#{1,6}\\s+Issues requiring attorney review", options: [.regularExpression, .caseInsensitive]) != nil {
-                inQueue = true
-                continue
+            if let level = headingLevel(trimmed) {
+                if trimmed.range(of: "^#{1,6}\\s+Attorney (review|intake) focus", options: [.regularExpression, .caseInsensitive]) != nil ||
+                    trimmed.range(of: "^#{1,6}\\s+Issues requiring attorney review", options: [.regularExpression, .caseInsensitive]) != nil {
+                    sectionLevel = level
+                    continue
+                }
+                if let current = sectionLevel {
+                    if level <= current { break }
+                    continue
+                }
             }
-            if inQueue && trimmed.hasPrefix("#") { break }
-            guard inQueue, trimmed.hasPrefix("- [") else { continue }
-            let value = trimmed.replacingOccurrences(of: "^- \\[.\\]\\s*", with: "", options: .regularExpression)
+            guard sectionLevel != nil,
+                  let box = trimmed.range(of: "^[-*] \\[[ xX]\\]\\s*", options: .regularExpression) else { continue }
+            let checked = trimmed[box].contains { $0 == "x" || $0 == "X" }
+            let value = String(trimmed[box.upperBound...])
             guard !value.isEmpty else { continue }
             let severity = parseSeverity(from: value)
             let display = stripSeverityPrefix(from: value)
-            items.append(AttorneyReviewItem(id: "issue-\(items.count)-\(display)", text: display, severity: severity))
+            items.append(AttorneyReviewItem(id: "issue-\(items.count)-\(display)", text: display, severity: severity, checkedInReport: checked))
         }
         return items
     }
 
-    private static func parseSeverity(from text: String) -> String? {
+    /// 1–6 for a Markdown ATX heading (`## Title`), nil for anything else.
+    nonisolated private static func headingLevel(_ line: String) -> Int? {
+        guard let range = line.range(of: "^#{1,6}(\\s|$)", options: .regularExpression) else { return nil }
+        return line[range].filter { $0 == "#" }.count
+    }
+
+    nonisolated private static func parseSeverity(from text: String) -> String? {
         let pattern = #"^\**(CRITICAL|HIGH|MEDIUM|LOW|INFO)\**\b"#
         guard let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) else { return nil }
         let range = NSRange(text.startIndex..<text.endIndex, in: text)
@@ -1108,7 +1181,7 @@ struct ContentView: View {
         return String(text[swiftRange]).uppercased()
     }
 
-    private static func stripSeverityPrefix(from text: String) -> String {
+    nonisolated private static func stripSeverityPrefix(from text: String) -> String {
         var result = text
         if parseSeverity(from: text) != nil,
            let range = result.range(of: #"^\**(CRITICAL|HIGH|MEDIUM|LOW|INFO)\**"#, options: [.regularExpression, .caseInsensitive]) {

@@ -67,6 +67,18 @@ function readableNode(event: TraceEvent): string {
   return nodeNames.get(key) ?? event.kind ?? "node";
 }
 
+/** Forgets a finished run's node names, so the map does not grow for the life of the Pi. */
+function forgetNodeNames(piRunId: string | undefined): void {
+  const prefix = `${piRunId ?? ""}:`;
+  for (const key of [...nodeNames.keys()]) if (key.startsWith(prefix)) nodeNames.delete(key);
+}
+
+/** How many node names are remembered for a pi-agents run (for tests). */
+export function rememberedNodeNames(piRunId: string): number {
+  const prefix = `${piRunId}:`;
+  return [...nodeNames.keys()].filter((key) => key.startsWith(prefix)).length;
+}
+
 function summarize(event: TraceEvent): string {
   switch (event.type) {
     case "run_created": {
@@ -120,6 +132,12 @@ function presentResult(value: unknown, display: string | undefined): string | un
     if (typeof report === "string") return report;
   }
   return undefined;
+}
+
+/** 1st, 2nd, 3rd, 4th … 11th, 12th, 13th … 21st, 22nd, 23rd. */
+export function ordinal(n: number): string {
+  const suffix = n % 100 >= 11 && n % 100 <= 13 ? "th" : n % 10 === 1 ? "st" : n % 10 === 2 ? "nd" : n % 10 === 3 ? "rd" : "th";
+  return `${n}${suffix}`;
 }
 
 export function jsonText(value: unknown): string | undefined {
@@ -426,7 +444,8 @@ export class Journal {
     if (event.type === "run_completed") {
       const header = this.headers.get(event.runId ?? "");
       const status = (event.status ?? "failed") as "completed" | "failed" | "stopped";
-      const markdown = presentResult(event.value, header?.display);
+      // The header is gone if this Pi never saw run_created; the row kept the run's `display`.
+      const markdown = presentResult(event.value, header?.display ?? run.display ?? undefined);
       // The finished mark and the final review (or the cancelled gates) land together.
       db.finishRun(
         run.id,
@@ -434,6 +453,7 @@ export class Journal {
         { checkpointId: randomUUID() },
       );
       this.headers.delete(event.runId ?? "");
+      forgetNodeNames(event.runId);
       if (event.runId) {
         this.piToLocal.delete(event.runId);
         this.finishedPi.add(event.runId);
@@ -507,8 +527,7 @@ export class Journal {
     const model = typeof input.model === "string" && input.model.trim() ? input.model.trim() : undefined;
     const { flow, resumeAt, resumeOffset, rebinds, display } = buildResumeFlow(row, db.completedStepValues(row.id), db.stepOverrides(row.id));
     const nth = row.resumes + 1;
-    const suffix = nth % 100 >= 11 && nth % 100 <= 13 ? "th" : nth % 10 === 1 ? "st" : nth % 10 === 2 ? "nd" : nth % 10 === 3 ? "rd" : "th";
-    db.appendEvent({ runId: row.id, type: "resume", summary: `Resuming from step ${resumeAt + 1} (${nth}${suffix} resume${model ? ` on ${model}` : ""})` });
+    db.appendEvent({ runId: row.id, type: "resume", summary: `Resuming from step ${resumeAt + 1} (${ordinal(nth)} resume${model ? ` on ${model}` : ""})` });
     const label = `${row.title} (resumed)`;
     const pending: { runId: string; label: string; resumeOffset: number; rebinds: number; attachedTo?: string } = { runId: row.id, label, resumeOffset, rebinds };
     this.pendingResumes.set(row.id, pending);
