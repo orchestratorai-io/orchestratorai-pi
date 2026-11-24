@@ -86,10 +86,18 @@ struct WorkflowLaunchSpec: Hashable {
             requiredParams: required
         )
 
-        guard let doc = root["doc"] as? String,
-              let block = fencedBlock(named: fenceName, in: doc),
-              let launch = try? Yams.load(yaml: block) as? [String: Any] else {
+        // No launch block: the generic file launch above. A launch block that is there but
+        // broken (unclosed fence, YAML that does not parse to a mapping) gives no spec at all,
+        // so the catalog shows the workflow as not ready instead of a launch card that is wrong.
+        let launch: [String: Any]
+        switch (root["doc"] as? String).map({ fencedBlock(named: fenceName, in: $0) }) ?? .absent {
+        case .absent:
             return spec
+        case .unterminated:
+            return nil
+        case .body(let block):
+            guard let parsed = (try? Yams.load(yaml: block)) as? [String: Any] else { return nil }
+            launch = parsed
         }
 
         if let title = launch["title"] as? String { spec.title = title }
@@ -137,7 +145,28 @@ struct WorkflowLaunchSpec: Hashable {
         return values
     }
 
-    private static func fencedBlock(named fence: String, in text: String) -> String? {
+    /// The launch fields' values while `run` is open: the run's saved params over the defaults,
+    /// so opening a run shows what it was started with.
+    func values(opening run: RunRecord?) -> [String: String] {
+        var values = initialValues()
+        if let run { values.merge(run.params) { _, stored in stored } }
+        return values
+    }
+
+    /// Start is allowed once the input the launch block asks for is present (a file or folder,
+    /// unless `file: none`) and every required field is filled in, whatever the input kind.
+    func canStart(hasInput: Bool, values: [String: String]) -> Bool {
+        if inputKind != .none && !hasInput { return false }
+        return requiredFieldParams.allSatisfy { !(values[$0] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    }
+
+    enum FencedBlock: Equatable {
+        case absent
+        case unterminated
+        case body(String)
+    }
+
+    static func fencedBlock(named fence: String, in text: String) -> FencedBlock {
         let lines = text.components(separatedBy: .newlines)
         var collecting = false
         var body: [String] = []
@@ -146,11 +175,11 @@ struct WorkflowLaunchSpec: Hashable {
             if !collecting {
                 if trimmed == "```\(fence)" { collecting = true }
             } else if trimmed == "```" {
-                return body.joined(separator: "\n")
+                return .body(body.joined(separator: "\n"))
             } else {
                 body.append(line)
             }
         }
-        return nil
+        return collecting ? .unterminated : .absent
     }
 }

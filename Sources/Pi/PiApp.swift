@@ -48,15 +48,13 @@ struct ContentView: View {
     @State private var workflows: [WorkflowDefinition] = []
 
     private var activeWorkflow: WorkflowDefinition? {
-        workflows.first(where: { $0.id == selectedWorkflow })
-            ?? workflows.first(where: { $0.id == "contract-review" })
-            ?? workflows.first
+        DetailSelection.activeWorkflow(selected: selectedWorkflow, openRun: runner.selectedRun, in: workflows)
     }
 
-    /// The run shown in the detail pane: the selected run when it belongs to the active workflow.
+    /// The run shown in the detail pane: the selected run when it belongs to the selected
+    /// workflow, including a run whose workflow has no catalog entry (an `inline` TUI run).
     private var displayedRun: RunRecord? {
-        guard let run = runner.selectedRun, run.workflow == activeWorkflow?.id else { return nil }
-        return run
+        DetailSelection.displayedRun(runner.selectedRun, selectedWorkflow: selectedWorkflow, activeWorkflow: activeWorkflow)
     }
 
     private var displayedState: ReviewState? {
@@ -100,7 +98,7 @@ struct ContentView: View {
                             if !projectTrusted { trustCard }
                             if runner.storeUnavailable { storeCard }
                             taskCard
-                            if let workflow = activeWorkflow, workflow.isReady || displayedRun != nil {
+                            if activeWorkflow?.isReady == true || displayedRun != nil {
                                 contextCard
                                 sourceDocumentCard
                                 gateCard
@@ -121,7 +119,7 @@ struct ContentView: View {
         .onAppear {
             reloadProject()
             runner.attach(projectDirectory: projectDirectory)
-            if let run = runner.selectedRun, workflows.contains(where: { $0.id == run.workflow }) {
+            if let run = runner.selectedRun {
                 selectedWorkflow = run.workflow
                 // attach() opened the newest run; fill its model as openRun does, or Resume on it
                 // would quietly switch to the default model.
@@ -129,7 +127,8 @@ struct ContentView: View {
             } else if let firstReady = workflows.first(where: \.isReady) {
                 selectedWorkflow = firstReady.id
             }
-            sidebarSelection = .workflow(selectedWorkflow)
+            // A run whose workflow has no catalog row (an `inline` TUI run) opens under Inbox.
+            sidebarSelection = workflows.contains(where: { $0.id == selectedWorkflow }) ? .workflow(selectedWorkflow) : .inbox
             resetParams()
         }
         .onChange(of: sidebarSelection) { _, newValue in
@@ -139,14 +138,16 @@ struct ContentView: View {
             }
         }
         .onChange(of: selectedWorkflow) { _, _ in
+            // Switching into the run that is already open (openRun sets the workflow, then this
+            // fires later) keeps the params openRun filled in from the run; anything else is a
+            // fresh launch card for the new workflow.
+            guard !DetailSelection.isOpening(runner.selectedRun, workflow: selectedWorkflow) else { return }
             reviewedIssueIDs = []
             reviewDecisionComment = ""
             gateDecisionComment = ""
+            selectedFile = nil
+            runner.select(runId: nil)
             resetParams()
-            if runner.selectedRun?.workflow != selectedWorkflow {
-                selectedFile = nil
-                runner.select(runId: nil)
-            }
         }
         .fileImporter(
             isPresented: $showingImporter,
@@ -187,12 +188,16 @@ struct ContentView: View {
 
     private func reloadProject() {
         projectDirectory = PiEnvironment.findProjectDirectory()
+        let seenGroups = Set(workflows.map(\.groupId))
         workflows = LegalWorkflowCatalog.workflows(projectDirectory: projectDirectory)
+        // A group only a user's own workflow names starts expanded, like Legal's five.
+        expandedGroups.formUnion(Set(workflows.map(\.groupId)).subtracting(seenGroups).subtracting(LegalWorkflowCatalog.groups.map(\.id)))
         projectTrusted = PiEnvironment.isProjectTrusted(projectDirectory)
     }
 
+    /// The launch fields for the active workflow; while a run is open, its saved params.
     private func resetParams() {
-        paramValues = activeWorkflow?.launch?.initialValues() ?? [:]
+        paramValues = activeWorkflow?.launch?.values(opening: displayedRun) ?? displayedRun?.params ?? [:]
     }
 
     // MARK: Selection
@@ -236,7 +241,8 @@ struct ContentView: View {
         } else {
             selectedFile = nil
         }
-        paramValues.merge(run.params) { _, stored in stored }
+        // The run's saved params over the defaults of its own workflow (not the one shown before).
+        resetParams()
         // Show the run's own model, so Resume runs on it unless the attorney types another.
         model = ResumeModel.boxValue(opening: run, current: model)
     }
@@ -251,7 +257,7 @@ struct ContentView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Pi - try OrchestratorAI Legal on your Mac")
                     .font(.title2.weight(.semibold))
-                Text(activeWorkflow?.title ?? "Workflows")
+                Text(activeWorkflow?.title ?? displayedRun?.workflow ?? "Workflows")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
@@ -342,6 +348,11 @@ struct ContentView: View {
                     } else {
                         notInstalled(workflow: workflow)
                     }
+                } else if let run = displayedRun {
+                    Label("Workflow \u{201C}\(run.workflow)\u{201D}", systemImage: "doc.text")
+                        .font(.title3.weight(.semibold))
+                    Text("This run's workflow is not in this Mac's workflow list (runs started in the Pi terminal are recorded as \u{201C}inline\u{201D}). You can review the run here, but a new one cannot be started from this card.")
+                        .foregroundStyle(.secondary)
                 } else {
                     Text("No workflows found in \(projectDirectory.appendingPathComponent(".pi/workflows").path)")
                         .foregroundStyle(.secondary)
@@ -351,14 +362,9 @@ struct ContentView: View {
         }
     }
 
-    /// Start is allowed once the input the launch block asks for is present.
+    /// Start is allowed once the input the launch block asks for is present and every required field is filled.
     private func canStart(_ launch: WorkflowLaunchSpec) -> Bool {
-        switch launch.inputKind {
-        case .file, .folder:
-            return selectedFile != nil
-        case .none:
-            return launch.requiredFieldParams.allSatisfy { !(paramValues[$0] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-        }
+        launch.canStart(hasInput: selectedFile != nil, values: paramValues)
     }
 
     @ViewBuilder
