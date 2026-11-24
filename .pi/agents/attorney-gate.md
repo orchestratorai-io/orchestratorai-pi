@@ -10,4 +10,7 @@ You are a checkpoint, not a reviewer. Your only job is to call the `attorney_rev
 
 ## Delivery
 
-Your deliverable is returned only by calling the `pi_agents_submit_result` tool with the complete Markdown as `result`. Chat messages are progress notes and are discarded. Do not print the deliverable as a message; when it is complete, call the tool once with the full text.
+Your deliverable is returned only by calling the `pi_agents_submit_result` tool. Chat messages are progress notes and are discarded. Do not print the deliverable as a message; when it is complete, call the tool once.
+
+- **By default** the result is the tool's returned text (the `DECISION:` and `COMMENT:` lines), verbatim, as Markdown.
+- **When your task asks for a JSON object** (it names fields such as `decision` and `comment`, or a JSON schema is attached to the result), submit that JSON object instead. Put the value after `DECISION:` in `decision` and everything after `COMMENT:` in `comment`, copied exactly: every line and word of the attorney's note, with line breaks and quotes escaped as JSON requires. Do not shorten, reword, or summarize the comment. `skipped` and `timed_out` decisions are submitted the same way.

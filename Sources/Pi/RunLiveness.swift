@@ -99,3 +99,26 @@ enum ResumeModel {
         return runModel
     }
 }
+
+/// Which workflow and run the detail pane shows. Pure, so the rules are testable.
+enum DetailSelection {
+    /// The catalog entry for the selected workflow. When the open run's workflow has no entry
+    /// (an `inline` TUI run), nil, so the pane frames that run rather than an unrelated
+    /// workflow; otherwise Contract Review, then the first entry, as before.
+    static func activeWorkflow(selected: String, openRun: RunRecord?, in workflows: [WorkflowDefinition]) -> WorkflowDefinition? {
+        if let match = workflows.first(where: { $0.id == selected }) { return match }
+        if openRun?.workflow == selected { return nil }
+        return workflows.first(where: { $0.id == "contract-review" }) ?? workflows.first
+    }
+
+    /// The open run, when it belongs to the selected workflow (catalogued or not).
+    static func displayedRun(_ run: RunRecord?, selectedWorkflow: String, activeWorkflow: WorkflowDefinition?) -> RunRecord? {
+        guard let run, run.workflow == selectedWorkflow || run.workflow == activeWorkflow?.id else { return nil }
+        return run
+    }
+
+    /// The workflow just switched to is the open run's own: opening a run, not leaving it.
+    static func isOpening(_ run: RunRecord?, workflow: String) -> Bool {
+        run?.workflow == workflow
+    }
+}

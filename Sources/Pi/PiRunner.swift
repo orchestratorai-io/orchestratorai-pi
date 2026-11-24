@@ -224,10 +224,8 @@ final class PiRunner: ObservableObject {
         process.arguments = [
             "--mode", "rpc",
             "--approve",
-            "--no-session",
-            "--provider", "ollama",
-            "--model", model
-        ]
+            "--no-session"
+        ] + LocalModelReference(model).arguments
         process.currentDirectoryURL = projectDirectory
         process.environment = PiEnvironment.processEnvironment(piExecutable: piPath, projectDirectory: projectDirectory)
         process.standardInput = input

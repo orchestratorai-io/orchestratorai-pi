@@ -196,13 +196,18 @@ function substituteParams(node: unknown, params: Record<string, string>): unknow
  * completed top-level step's result (an attorney override wins over the stored
  * value), then the remaining steps run unchanged. A step that was partly done
  * (a loop mid-iteration, a gate mid-wait) re-runs whole; gates are idempotent.
+ * A workflow whose root is one node rather than a sequence resumes as a
+ * one-step sequence, i.e. that node runs again.
  */
 export function buildResumeFlow(run: RunRow, completed: Map<number, unknown>, overrides: Map<number, unknown>) {
   if (!run.flow_json) throw new Error("run has no stored flow (started before resume support)");
   const flow = JSON.parse(run.flow_json) as { kind: string; body?: { kind: string; steps?: unknown[] }; steps?: unknown[] };
   const root = flow.kind === "workflow" ? flow.body : flow;
-  if (!root || root.kind !== "sequence" || !Array.isArray(root.steps)) throw new Error("resume supports sequence-rooted workflows");
-  const steps = root.steps as Array<{ as?: string }>;
+  if (!root || typeof root.kind !== "string") throw new Error("run has no resumable flow");
+  // A single-node root (kb-query is one agent, not a sequence) is a one-step sequence:
+  // nothing before it can have completed, so resume simply runs that node again.
+  const steps = (root.kind === "sequence" ? root.steps : [root]) as Array<{ as?: string }>;
+  if (!Array.isArray(steps)) throw new Error("run has no resumable flow");
   let resumeAt = 0;
   while (resumeAt < steps.length && (overrides.has(resumeAt) || completed.has(resumeAt))) resumeAt++;
   if (resumeAt >= steps.length) throw new Error("nothing to resume: every step already completed");

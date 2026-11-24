@@ -36,16 +36,14 @@ struct SidebarView: View {
                 inboxRow
             }
 
-            ForEach(LegalWorkflowCatalog.groups) { group in
-                let items = visibleWorkflows.filter { $0.groupId == group.id }
-                if !items.isEmpty {
-                    Section(isExpanded: groupBinding(group.id)) {
-                        ForEach(items) { workflow in
-                            workflowRow(workflow)
-                        }
-                    } header: {
-                        Text(group.name)
+            // Includes groups a user's own workflow names that are not one of Legal's five.
+            ForEach(LegalWorkflowCatalog.sidebarSections(for: visibleWorkflows), id: \.group.id) { section in
+                Section(isExpanded: groupBinding(section.group.id)) {
+                    ForEach(section.items) { workflow in
+                        workflowRow(workflow)
                     }
+                } header: {
+                    Text(section.group.name)
                 }
             }
         }
