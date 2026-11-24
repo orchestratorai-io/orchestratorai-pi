@@ -23,19 +23,4 @@ Everything waiting on Matt in this project, **most important first**. Deadlines 
   - **Answer** (added when Answered).
 - **grokbot** reads this file (and the same file in Matt's other projects) to answer "what are my top issues?". It lists items that are Waiting or Asked.
 
-## 1. Install qwen3-coder-next for Deposition Prep's answer step, or change that step's default (no deadline)
-
-**Status:** Waiting
-
-**What:** Deposition Prep, in "Predicted cross-exam" mode, writes witness answer preparation and then checks it with the witness-coaching guard. That one step now has its own model setting, "Answer-prep model", which starts at `ollama/qwen3-coder-next:q4_K_M`: the only model that passed the guard when local models were compared (qwen3.6 wrote scripted testimony every time). But `ollama list` on the Mac Studio on 2026-11-23 shows that model is no longer installed. So a Predicted cross-exam run with the defaults stops at that step with a model error. The other mode, "Preparation outline", is not affected.
-
-**Why it matters:** A demo of Predicted cross-exam fails partway unless someone changes the setting first.
-
-**Options:**
-1. Pull the model again on the Studio: `ollama pull qwen3-coder-next:q4_K_M` (a large download, roughly 50 GB). Nothing in Pi changes.
-2. Change the step's default to "Local model box" (today `qwen3.6:35b-mlx`). One-line change, but qwen3.6 failed the guard on every probe, so the guard would usually withhold the answer preparation.
-3. Leave it, and pick "Local model box" in the launch card before a Predicted cross-exam run.
-
-**Recommendation:** 1, if the disk space is there: it is the only model shown to produce answer preparation that passes the guard.
-
-**Reply:** "Pull qwen3-coder-next" or "Default it to the Local model box" or "Leave it".
+Nothing is waiting on Matt right now.

@@ -169,19 +169,22 @@ final class WorkflowsAndModelsTests: XCTestCase {
 
     // MARK: 16. deposition-prep's answer-prep model
 
-    func testDepositionPrepOffersPrepModelDefaultingToTheModelThatPassedTheGuard() throws {
+    func testDepositionPrepOffersPrepModelDefaultingToTheLocalModelBox() throws {
         let passed = "ollama/qwen3-coder-next:q4_K_M"
+        let localBox = "Local model box"
         let readme = try String(contentsOf: repoRoot.appendingPathComponent("README.md"), encoding: .utf8)
         XCTAssertTrue(readme.contains("qwen3-coder-next"), "the README still records which model passed")
+        XCTAssertTrue(readme.contains("has not been put through the witness-preparation probe yet"), "the README says the Local model box is unprobed")
         let launch = try XCTUnwrap(LegalWorkflowCatalog.workflow(id: "deposition-prep", projectDirectory: repoRoot)?.launch)
-        XCTAssertEqual(launch.params["prep_model"], passed)
+        XCTAssertEqual(launch.params["prep_model"], localBox)
         let field = try XCTUnwrap(launch.fields.first { $0.param == "prep_model" })
         XCTAssertEqual(field.kind, .choice)
-        XCTAssertEqual(field.defaultValue, passed)
-        XCTAssertEqual(field.options, [passed, "Local model box"])
+        XCTAssertEqual(field.defaultValue, localBox)
+        XCTAssertEqual(field.options, [localBox, passed], "the default first; qwen3-coder-next stays a choice")
         XCTAssertFalse(launch.requiredParams.contains("prep_model"))
 
-        // Only the answer-prep step pins it: every other step stays on the Local model box.
+        // Only the qwen3-coder-next copy of answer-prep pins a model: the default copy and every other
+        // step stay on the Local model box.
         let yaml = try String(contentsOf: repoRoot.appendingPathComponent(".pi/workflows/deposition-prep.yaml"), encoding: .utf8)
         let pins = yaml.components(separatedBy: .newlines).filter { $0.trimmingCharacters(in: .whitespaces).hasPrefix("model:") }
         XCTAssertEqual(pins.map { $0.trimmingCharacters(in: .whitespaces) }, ["model: \"\(passed)\""])

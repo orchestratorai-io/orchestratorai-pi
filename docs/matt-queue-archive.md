@@ -1,5 +1,26 @@
 # Matt queue archive
 
+## Install qwen3-coder-next for Deposition Prep's answer step, or change that step's default (no deadline)
+
+**Status:** Answered (2026-11-23) → Processed (2026-11-23)
+
+**What:** Deposition Prep, in "Predicted cross-exam" mode, writes witness answer preparation and then checks it with the witness-coaching guard. That one step now has its own model setting, "Answer-prep model", which starts at `ollama/qwen3-coder-next:q4_K_M`: the only model that passed the guard when local models were compared (qwen3.6 wrote scripted testimony every time). But `ollama list` on the Mac Studio on 2026-11-23 shows that model is no longer installed. So a Predicted cross-exam run with the defaults stops at that step with a model error. The other mode, "Preparation outline", is not affected.
+
+**Why it matters:** A demo of Predicted cross-exam fails partway unless someone changes the setting first.
+
+**Options:**
+1. Pull the model again on the Studio: `ollama pull qwen3-coder-next:q4_K_M` (a large download, roughly 50 GB). Nothing in Pi changes.
+2. Change the step's default to "Local model box" (today `qwen3.6:35b-mlx`). One-line change, but qwen3.6 failed the guard on every probe, so the guard would usually withhold the answer preparation.
+3. Leave it, and pick "Local model box" in the launch card before a Predicted cross-exam run.
+
+**Recommendation:** 1, if the disk space is there: it is the only model shown to produce answer preparation that passes the guard.
+
+**Reply:** "Pull qwen3-coder-next" or "Default it to the Local model box" or "Leave it".
+
+**Answer:** Option 2, "Point the deposition-prep step at the Local model box." (Matt, relayed by the CEO at 7:35 PM CT on 2026-11-23.)
+
+**Processed note:** `prep_model` in `.pi/workflows/deposition-prep.yaml` now defaults to "Local model box", listed first in the launch card, so the answer-prep step runs on the app's Local model (`qwen3.6:35b-mlx` today) like every other step and a Predicted cross-exam run with the defaults no longer asks for a model that isn't installed. `ollama/qwen3-coder-next:q4_K_M` stays a choice in the launch card (not the default). The README and the workflow text still record that qwen3-coder-next is the model that passed the witness-preparation probe, and now say the Local model box hasn't been put through that probe yet and that the typed witness-coaching guard still checks every answer-prep result. qwen3-coder-next was not pulled. Tests: `workflows-models.test.ts` test 16 and `WorkflowsAndModelsTests` item 16.
+
 ## Before the next Pi demo: the local model Pi uses by default is gone from the Studio
 
 **Status:** Answered (2026-11-23) → Processed (2026-11-23)
