@@ -209,6 +209,10 @@ final class RunStore {
     CREATE TABLE IF NOT EXISTS run_progress (
       session_file TEXT PRIMARY KEY, text TEXT NOT NULL, updated_at TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS run_state (
+      run_id TEXT NOT NULL, key TEXT NOT NULL, value_json TEXT NOT NULL, reducer TEXT NOT NULL,
+      version INTEGER NOT NULL DEFAULT 1, updated_at TEXT NOT NULL, PRIMARY KEY (run_id, key)
+    );
     CREATE TABLE IF NOT EXISTS step_overrides (
       run_id TEXT NOT NULL, step_index INTEGER NOT NULL, value_json TEXT NOT NULL, note TEXT, at TEXT NOT NULL,
       PRIMARY KEY (run_id, step_index)
@@ -329,12 +333,32 @@ final class RunStore {
         )
     }
 
+    /// The session files of a run's delegated agents, as journaled in its node_session events.
+    func sessionFiles(runId: String) -> [String] {
+        query("SELECT DISTINCT detail FROM run_events WHERE run_id = ? AND type = 'node_session' AND detail IS NOT NULL", bind: [runId]) {
+            Self.text($0, 0)
+        }
+    }
+
+    /// Deletes everything the store holds for one run, in one transaction: its journal,
+    /// gates, evaluations, step edits, workflow state and its agents' live text. For a
+    /// legal app "Delete" has to delete; the run's session files on disk are removed by
+    /// `SessionFiles.remove` (the caller collects them with `sessionFiles(runId:)` first).
     @discardableResult
     func deleteRun(id: String) -> Bool {
-        execute("DELETE FROM run_events WHERE run_id = ?", bind: [id])
+        exec("BEGIN IMMEDIATE;")
+        let ok = execute(
+            "DELETE FROM run_progress WHERE session_file IN (SELECT detail FROM run_events WHERE run_id = ? AND type = 'node_session' AND detail IS NOT NULL)",
+            bind: [id]
+        )
+            && execute("DELETE FROM step_overrides WHERE run_id = ?", bind: [id])
+            && execute("DELETE FROM run_state WHERE run_id = ?", bind: [id])
+            && execute("DELETE FROM run_events WHERE run_id = ?", bind: [id])
             && execute("DELETE FROM checkpoints WHERE run_id = ?", bind: [id])
             && execute("DELETE FROM evaluations WHERE run_id = ?", bind: [id])
             && execute("DELETE FROM runs WHERE id = ?", bind: [id])
+        exec(ok ? "COMMIT;" : "ROLLBACK;")
+        return ok
     }
 
     /// Marks a queued/running run as stopped when the Pi process died underneath it.
@@ -569,5 +593,42 @@ final class RunStore {
                 confidence: kind == .noul ? nil : number(answer["confidence"])
             )
         }
+    }
+}
+
+/// Removes the on-disk Pi session files of a run the user deleted in the app. Only
+/// `.jsonl` files inside Pi's sessions folder are touched, so a stray path in the
+/// journal can never delete anything else; a session folder left empty goes too.
+enum SessionFiles {
+    static var defaultRoot: URL {
+        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".pi/agent/sessions", isDirectory: true)
+    }
+
+    /// The paths that are safe to delete: real `.jsonl` files under `root`.
+    static func deletable(_ paths: [String], under root: URL) -> [URL] {
+        let rootPath = root.standardizedFileURL.resolvingSymlinksInPath().path + "/"
+        return paths.compactMap { path in
+            let url = URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath()
+            guard url.pathExtension == "jsonl", url.path.hasPrefix(rootPath) else { return nil }
+            var isDir: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), !isDir.boolValue else { return nil }
+            return url
+        }
+    }
+
+    @discardableResult
+    static func remove(_ paths: [String], under root: URL = defaultRoot) -> Int {
+        let fm = FileManager.default
+        let rootPath = root.standardizedFileURL.resolvingSymlinksInPath().path
+        var removed = 0
+        for url in deletable(paths, under: root) {
+            guard (try? fm.removeItem(at: url)) != nil else { continue }
+            removed += 1
+            let folder = url.deletingLastPathComponent()
+            if folder.path != rootPath, (try? fm.contentsOfDirectory(atPath: folder.path))?.isEmpty == true {
+                try? fm.removeItem(at: folder)
+            }
+        }
+        return removed
     }
 }

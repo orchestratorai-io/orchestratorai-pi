@@ -350,11 +350,17 @@ final class PiRunner: ObservableObject {
     // MARK: Attorney decisions
 
     func decide(checkpoint: CheckpointRecord, approved: Bool, comment: String) {
-        let note = comment.trimmingCharacters(in: .whitespacesAndNewlines)
-        let status = approved ? "approved" : "changes_requested"
-        let prefix = approved ? "Approved by attorney." : "Changes requested by attorney."
-        store?.decide(checkpointId: checkpoint.id, status: status, comment: note.isEmpty ? prefix : "\(prefix) \(note)")
+        let decision = Self.decision(approved: approved, comment: comment)
+        store?.decide(checkpointId: checkpoint.id, status: decision.status, comment: decision.comment)
         refresh()
+    }
+
+    /// What a decision stores. The comment is the attorney's note exactly as typed
+    /// (trimmed), because the next step receives it verbatim: in cross-exam it is the
+    /// witness's answer. The approval is recorded only in `status`; nothing like
+    /// "Approved by attorney." is ever added to the text.
+    nonisolated static func decision(approved: Bool, comment: String) -> (status: String, comment: String) {
+        (approved ? "approved" : "changes_requested", comment.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
     func overrideStep(runId: String, stepIndex: Int, text: String, note: String?) {
@@ -374,7 +380,9 @@ final class PiRunner: ObservableObject {
 
     func deleteRun(_ run: RunRecord) {
         if run.id == activeRunId { stop() }
-        store?.deleteRun(id: run.id)
+        // Collect the session files before the journal that names them is deleted.
+        let files = store?.sessionFiles(runId: run.id) ?? []
+        if store?.deleteRun(id: run.id) == true { SessionFiles.remove(files) }
         if selectedRunId == run.id { selectedRunId = nil }
         refresh()
     }
