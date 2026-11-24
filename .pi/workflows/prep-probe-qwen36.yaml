@@ -6,13 +6,15 @@ params:
 doc: |-
   Controlled comparison of which local model can write witness preparation that passes the
   witness-coaching guard. The prep persona and the input are fixed; only `model` varies.
+  2026-11-23: repointed from qwen3.6:latest (no longer installed on the Studio) to
+  qwen3.6:35b-mlx, Pi's default model, so the qwen3.6 probe probes the qwen3.6 we run.
 flow:
   kind: sequence
   steps:
     - kind: agent
       profile: depo-answer-prep
       label: answer-prep
-      model: "ollama/qwen3.6:latest"
+      model: "ollama/qwen3.6:35b-mlx"
       task: |-
         Prepare the witness for the predicted cross-examination in the file {params.questions} (read it).
         One block per question, in your required format. Follow your hard rules.
@@ -41,4 +43,4 @@ flow:
         additionalProperties: false
       as: guard
     - kind: value
-      value: { model: "ollama/qwen3.6:latest", decision: "{guard.decision}", reason: "{guard.reason}", prep: "{prep}" }
+      value: { model: "ollama/qwen3.6:35b-mlx", decision: "{guard.decision}", reason: "{guard.reason}", prep: "{prep}" }
