@@ -241,8 +241,10 @@ export class RunStore {
     this.path = path.join(projectDir, STORE_RELATIVE_PATH);
     fs.mkdirSync(path.dirname(this.path), { recursive: true });
     this.db = new DatabaseSync(this.path);
-    this.db.exec("PRAGMA journal_mode = WAL;");
+    // Install the busy handler before WAL negotiation: journal_mode itself needs
+    // a lock and concurrent opens otherwise fail before reaching this setting.
     this.db.exec("PRAGMA busy_timeout = 5000;");
+    this.db.exec("PRAGMA journal_mode = WAL;");
     this.db.exec("PRAGMA synchronous = NORMAL;");
     this.db.exec(SCHEMA);
     // One write transaction for the check-then-ALTER loop: two Pis (or a parallel

@@ -226,17 +226,23 @@ final class RunStore: @unchecked Sendable {
     private var db: OpaquePointer?
     let path: String
 
-    init?(projectDirectory: URL) {
+    init?(projectDirectory: URL, busyTimeoutMilliseconds: Int32 = 5_000) {
         let url = projectDirectory.appendingPathComponent("data/orchestrator.sqlite")
         path = url.path
         try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         guard sqlite3_open_v2(path, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK else {
             return nil
         }
-        exec("PRAGMA journal_mode = WAL;")
-        exec("PRAGMA busy_timeout = 5000;")
-        exec(Self.schema)
-        migrate()
+        // Install the busy handler before WAL negotiation: journal_mode itself
+        // needs a lock and concurrent opens must wait here too.
+        guard sqlite3_busy_timeout(db, busyTimeoutMilliseconds) == SQLITE_OK,
+              exec("PRAGMA journal_mode = WAL;"),
+              exec(Self.schema),
+              migrate() else {
+            sqlite3_close(db)
+            db = nil
+            return nil
+        }
     }
 
     /// Columns added after the first release, the same list as `MIGRATIONS` in
@@ -260,12 +266,19 @@ final class RunStore: @unchecked Sendable {
     /// Applies `migrations` idempotently, in one write transaction so a Pi opening the
     /// store at the same moment takes turns with the app instead of racing on a column.
     /// A column the other side added in the meantime makes the ALTER fail harmlessly.
-    private func migrate() {
-        exec("BEGIN IMMEDIATE;")
+    private func migrate() -> Bool {
+        guard exec("BEGIN IMMEDIATE;") else { return false }
         for m in Self.migrations where !columns(of: m.table).contains(m.column) {
-            exec(m.ddl + ";")
+            guard exec(m.ddl + ";") else {
+                _ = exec("ROLLBACK;")
+                return false
+            }
         }
-        exec("COMMIT;")
+        guard exec("COMMIT;") else {
+            _ = exec("ROLLBACK;")
+            return false
+        }
+        return true
     }
 
     func columns(of table: String) -> Set<String> {
@@ -649,8 +662,9 @@ final class RunStore: @unchecked Sendable {
 
     // MARK: SQLite plumbing
 
-    private func exec(_ sql: String) {
-        sqlite3_exec(db, sql, nil, nil, nil)
+    @discardableResult
+    private func exec(_ sql: String) -> Bool {
+        sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK
     }
 
     /// Rows changed by the last statement on this connection.
