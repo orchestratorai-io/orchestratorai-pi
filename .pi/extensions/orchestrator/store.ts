@@ -26,7 +26,14 @@ export type CheckpointStatus =
   | "pending"
   | "approved"
   | "changes_requested"
-  | "cancelled";
+  | "cancelled"
+  /** The gate waited GATE_MAX_WAIT_MS and nobody decided. Older rows from
+   * before this status existed say 'cancelled' with a "Timed out…" comment. */
+  | "timed_out";
+
+/** Who started a run: the macOS app (`start` over RPC), or a Pi terminal /
+ * another extension (journalled lazily from its run_created event). */
+export type RunOrigin = "app" | "tui";
 
 export interface RunRow {
   id: string;
@@ -49,6 +56,8 @@ export interface RunRow {
   owner_pid: number | null;
   /** Last time that Pi said it is still alive (every HEARTBEAT_MS while it owns the run). */
   heartbeat_at: string | null;
+  /** Null on rows written before the column existed. */
+  origin: RunOrigin | null;
   created_at: string;
   started_at: string | null;
   completed_at: string | null;
@@ -190,6 +199,7 @@ const MIGRATIONS: Array<{ table: string; column: string; ddl: string }> = [
   { table: "run_events", column: "step_index", ddl: "ALTER TABLE run_events ADD COLUMN step_index INTEGER" },
   { table: "runs", column: "owner_pid", ddl: "ALTER TABLE runs ADD COLUMN owner_pid INTEGER" },
   { table: "runs", column: "heartbeat_at", ddl: "ALTER TABLE runs ADD COLUMN heartbeat_at TEXT" },
+  { table: "runs", column: "origin", ddl: "ALTER TABLE runs ADD COLUMN origin TEXT" },
 ];
 
 function nowIso(at?: number): string {
@@ -245,12 +255,13 @@ export class RunStore {
     model?: string;
     /** The Pi process creating the run, which will drive it. */
     ownerPid?: number;
+    origin?: RunOrigin;
   }): RunRow {
     const at = nowIso();
     this.db
       .prepare(
-        `INSERT INTO runs (id, workflow, title, source_document, params_json, model, status, owner_pid, heartbeat_at, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?)`,
+        `INSERT INTO runs (id, workflow, title, source_document, params_json, model, status, owner_pid, heartbeat_at, origin, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?)`,
       )
       .run(
         input.id,
@@ -261,6 +272,7 @@ export class RunStore {
         input.model ?? null,
         input.ownerPid ?? null,
         input.ownerPid === undefined ? null : at,
+        input.origin ?? null,
         at,
         at,
       );
@@ -279,12 +291,12 @@ export class RunStore {
       .get(piRunId) as RunRow | undefined;
   }
 
-  latestRunningRun(): RunRow | undefined {
-    return this.db
-      .prepare(
-        "SELECT * FROM runs WHERE status IN ('queued','running') ORDER BY created_at DESC LIMIT 1",
-      )
-      .get() as RunRow | undefined;
+  /** The run a tool call names: by our id, or by the pi-agents run id. An empty
+   * id names no run; there is deliberately no "newest running run" fallback,
+   * which could pick a terminal run or someone else's. */
+  namedRun(runId: string): RunRow | undefined {
+    if (!runId) return undefined;
+    return this.getRun(runId) ?? this.findRunByPiId(runId);
   }
 
   markStarted(id: string, piRunId: string, ownerPid?: number): void {
@@ -499,14 +511,14 @@ export class RunStore {
       .get(id) as CheckpointRow | undefined;
   }
 
-  /** Most recent live (not cancelled) attorney gate in this run asking exactly
+  /** Most recent live (not cancelled or timed out) attorney gate in this run asking exactly
    * this question: same title and same summary. The title alone is not enough,
    * because a workflow loop (cross-exam) asks under one title every turn. */
   findGateCheckpoint(runId: string, title: string, summary: string): CheckpointRow | undefined {
     return this.db
       .prepare(
         `SELECT * FROM checkpoints
-         WHERE run_id = ? AND kind = 'gate' AND title = ? AND summary_markdown IS ? AND status != 'cancelled'
+         WHERE run_id = ? AND kind = 'gate' AND title = ? AND summary_markdown IS ? AND status NOT IN ('cancelled', 'timed_out')
          ORDER BY requested_at DESC, rowid DESC LIMIT 1`,
       )
       .get(runId, title, summary) as CheckpointRow | undefined;
@@ -576,12 +588,12 @@ export class RunStore {
       );
   }
 
-  /** Cancels one checkpoint if it is still pending. Returns false when the
-   * attorney decided it first, so the caller can use that decision instead. */
-  cancelCheckpointIfPending(id: string, reason: string): boolean {
+  /** Marks one checkpoint timed out if it is still pending. Returns false when
+   * the attorney decided it first, so the caller can use that decision instead. */
+  timeOutCheckpointIfPending(id: string, reason: string): boolean {
     const result = this.db
       .prepare(
-        `UPDATE checkpoints SET status = 'cancelled', decision_comment = ?, decided_at = ?
+        `UPDATE checkpoints SET status = 'timed_out', decision_comment = ?, decided_at = ?
          WHERE id = ? AND status = 'pending'`,
       )
       .run(reason, nowIso(), id);

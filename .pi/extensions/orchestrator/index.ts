@@ -253,7 +253,7 @@ export default function orchestrator(pi: any) {
       const attached = consoleAttached();
       const run = gateRun(db, params.run_id, attached);
       if (!run) {
-        const named = params.run_id && (db.getRun(params.run_id) ?? db.findRunByPiId(params.run_id));
+        const named = db.namedRun(params.run_id);
         if (named) db.appendEvent({ runId: named.id, type: "gate_skipped", summary: `Gate skipped, no console attached — ${params.title}` });
         return SKIPPED;
       }
@@ -299,7 +299,7 @@ export default function orchestrator(pi: any) {
       const rubric = rubrics.get(params.rubric);
       if (!rubric) throw new Error(`unknown rubric '${params.rubric}'. Available: ${[...rubrics.keys()].join(", ")}`);
       const result = await runRubric(client, rubric, params.inputs);
-      const run = params.run_id ? (db.getRun(params.run_id) ?? db.findRunByPiId(params.run_id)) : undefined;
+      const run = db.namedRun(params.run_id);
       const preview = typeof params.inputs === "string" ? params.inputs : JSON.stringify(params.inputs);
       db.recordEvaluation({
         id: randomUUID(), runId: run?.id, rubric: result.rubric, rubricVersion: result.version,
@@ -318,8 +318,8 @@ export default function orchestrator(pi: any) {
   // ------------------------------------------------------ typed run state
 
   function resolveRun(db: RunStore, runId: string): RunRow {
-    const run = (runId && (db.getRun(runId) ?? db.findRunByPiId(runId))) || db.latestRunningRun();
-    if (!run) throw new Error("no run to attach state to (pass the run_id from your task)");
+    const run = db.namedRun(runId);
+    if (!run) throw new Error(runId ? `no run '${runId}' to attach state to` : "no run to attach state to (pass the run_id from your task)");
     return run;
   }
 

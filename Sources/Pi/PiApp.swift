@@ -909,10 +909,10 @@ struct ContentView: View {
                                 .font(.headline)
                             ForEach(runner.checkpoints(for: run.id).filter { !$0.isPending }) { checkpoint in
                                 HStack(alignment: .top, spacing: 8) {
-                                    Image(systemName: checkpoint.isGate ? "hand.raised" : "person.badge.key")
-                                        .foregroundStyle(.secondary)
+                                    Image(systemName: checkpoint.isTimedOut ? "clock.badge.exclamationmark" : checkpoint.isGate ? "hand.raised" : "person.badge.key")
+                                        .foregroundStyle(checkpoint.isTimedOut ? .orange : .secondary)
                                     VStack(alignment: .leading, spacing: 2) {
-                                        Text("\(checkpoint.title) — \(checkpoint.status.replacingOccurrences(of: "_", with: " "))")
+                                        Text("\(checkpoint.title) — \(checkpoint.statusLabel)")
                                             .font(.caption.weight(.semibold))
                                         if let comment = checkpoint.decisionComment, !comment.isEmpty {
                                             Text(comment)

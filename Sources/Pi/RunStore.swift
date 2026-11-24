@@ -51,13 +51,28 @@ struct CheckpointRecord: Identifiable, Hashable {
     let kind: String            // gate | final_review
     let title: String
     let summaryMarkdown: String?
-    let status: String          // pending | approved | changes_requested | cancelled
+    let status: String          // pending | approved | changes_requested | cancelled | timed_out
     let decisionComment: String?
     let requestedAt: String
     let decidedAt: String?
 
     var isPending: Bool { status == "pending" }
     var isGate: Bool { kind == "gate" }
+    /// The gate waited its full time and nobody decided. Rows from before the
+    /// `timed_out` status say `cancelled` with a "Timed out…" comment.
+    var isTimedOut: Bool { status == "timed_out" }
+
+    /// The status as the attorney reads it.
+    var statusLabel: String {
+        switch status {
+        case "pending": return "Pending"
+        case "approved": return "Approved"
+        case "changes_requested": return "Changes requested"
+        case "cancelled": return "Cancelled"
+        case "timed_out": return "Timed out (no decision in time)"
+        default: return status.replacingOccurrences(of: "_", with: " ")
+        }
+    }
 }
 
 /// One calibrated answer from a rubric question, reduced to its headline numbers.

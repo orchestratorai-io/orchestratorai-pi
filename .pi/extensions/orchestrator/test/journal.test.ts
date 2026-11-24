@@ -225,3 +225,15 @@ test("resume without a model keeps the run's model", async () => {
     cleanup();
   }
 });
+
+test("runs record who started them: the app's start is 'app', a run seen only from its events is 'tui'", async () => {
+  const { db, journal, cleanup } = setup();
+  try {
+    const reply = await journal.start(db, { workflow: "contract-review", title: "From the app" }, undefined);
+    assert.equal(db.getRun(reply.runId as string)!.origin, "app");
+    journal.onRunEvent({ type: "run_created", at: Date.now(), run: { id: "pi-tui-9", label: "Typed in the TUI", source: { kind: "workflow", workflow: "contract-review" }, params: {}, flow: FLOW } });
+    assert.equal(db.findRunByPiId("pi-tui-9")!.origin, "tui");
+  } finally {
+    cleanup();
+  }
+});

@@ -336,6 +336,7 @@ export class Journal {
           title: event.run.label ?? event.run.source.workflow ?? "Workflow run",
           params: stringMap(event.run.params ?? event.run.flow?.params),
           ownerPid: this.pid,
+          origin: "tui",
         });
       }
       db.markStarted(row.id, piRunId, this.pid);
@@ -429,6 +430,7 @@ export class Journal {
       params,
       model: typeof input.model === "string" ? input.model : fallbackModel,
       ownerPid: this.pid,
+      origin: "app",
     });
     db.appendEvent({ runId: row.id, type: "queued", summary: `Queued ${workflow}` });
     try {
