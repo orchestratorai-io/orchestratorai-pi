@@ -7,7 +7,7 @@ params:
   - { name: topics, default: "Not specified", description: "Deposition topics to cover" }
   - { name: mode, default: "Preparation outline", description: "Preparation outline | Predicted cross-exam" }
   - { name: knowledge_dir, default: "matters", description: "Folder searched for the matter record" }
-  - { name: prep_model, default: "ollama/qwen3-coder-next:q4_K_M", description: "Model for the answer-preparation step only (Predicted cross-exam mode): ollama/qwen3-coder-next:q4_K_M | Local model box" }
+  - { name: prep_model, default: "Local model box", description: "Model for the answer-preparation step only (Predicted cross-exam mode): Local model box | ollama/qwen3-coder-next:q4_K_M" }
   - { name: run_id, default: "", description: "OrchestratorAI run id (set by the app; leave empty from the TUI)" }
 doc: |-
   Composition: case analyst -> switch(mode) { outline: questions -> research |
@@ -18,11 +18,13 @@ doc: |-
   over the prep text and the workflow switches on the decision: pass -> included; review -> shown to the
   attorney at a gate before inclusion; block -> omitted and the report says why. The generative step is
   still an LLM; what changed is that a calibrated classifier, not a prompt, decides whether it ships.
-  `prep_model` picks the model for the answer-preparation step only. It defaults to
-  `ollama/qwen3-coder-next:q4_K_M`, the one model that passed the guard on the witness-preparation probe
-  (README, "Which local model, per node"); qwen3.6 scripted testimony on every probe. "Local model box"
-  runs the step on the app's Local model like every other step. pi-agents does not fill params into
-  `model:`, so the choice is a switch between the two copies of the step (same task text, via a YAML anchor).
+  `prep_model` picks the model for the answer-preparation step only. It defaults to "Local model box",
+  which runs the step on the app's Local model like every other step (`qwen3.6:35b-mlx` today). That model
+  has not been put through the witness-preparation probe yet. `ollama/qwen3-coder-next:q4_K_M` is the one
+  model that passed the guard on that probe (README, "Which local model, per node"; qwen3.6 scripted
+  testimony on every probe); it stays a choice, but it has to be installed in Ollama to run. Either way the
+  typed witness-coaching guard below still checks every answer-prep result. pi-agents does not fill params
+  into `model:`, so the choice is a switch between the two copies of the step (same task text, via a YAML anchor).
 
   ```orchestrator-launch
   title: Deposition Prep
@@ -35,7 +37,7 @@ doc: |-
     - { param: topics, label: Topics, kind: text, default: "NDA evaluation meetings; what engineers retained; the product timeline; the residuals clause." }
     - { param: mode, label: Mode, kind: choice, options: [Preparation outline, Predicted cross-exam] }
     - { param: knowledge_dir, label: Knowledge folder, kind: line }
-    - { param: prep_model, label: Answer-prep model, kind: choice, options: ["ollama/qwen3-coder-next:q4_K_M", "Local model box"] }
+    - { param: prep_model, label: Answer-prep model, kind: choice, options: ["Local model box", "ollama/qwen3-coder-next:q4_K_M"] }
   review:
     focusTitle: Attorney review focus
     focusSubtitle: Predicted questions are preparation aids. Verify every fact against the record before the deposition.

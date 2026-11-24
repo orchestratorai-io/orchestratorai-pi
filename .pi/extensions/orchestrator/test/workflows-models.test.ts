@@ -1,7 +1,7 @@
 // Tests for the 2026-11-23 Pi review items handled in the extension and workflow files:
 //  13. kb-query (a single-agent root, not a sequence) can be resumed
 //  14. attorney-gate's prompt allows the JSON result legal-research asks for
-//  16. deposition-prep's answer-prep step runs on prep_model
+//  16. deposition-prep's answer-prep step runs on prep_model (default: the Local model box)
 // The app-side parts (12, 13, 15, 16) are in Tests/PiTests/WorkflowsAndModelsTests.swift.
 // Run: npm test (from .pi/extensions/orchestrator).
 
@@ -108,13 +108,22 @@ test("14: attorney-gate allows the JSON {decision, comment} result a step's sche
   assert.match(persona, /By default\*\* the result is the tool's returned text/);
 });
 
-test("16: deposition-prep runs answer-prep on prep_model, and only that step pins a model", () => {
+test("16: deposition-prep runs answer-prep on prep_model (default Local model box), and only the qwen3-coder-next copy pins a model", () => {
   const wf = YAML.parse(readRepo(".pi/workflows/deposition-prep.yaml"));
   const param = wf.params.find((p: { name: string }) => p.name === "prep_model");
-  assert.equal(param.default, "ollama/qwen3-coder-next:q4_K_M");
+  const passed = "ollama/qwen3-coder-next:q4_K_M";
+  assert.equal(param.default, "Local model box");
   assert.notEqual(param.required, true);
-  // README records that this model passed the witness-coaching guard.
-  assert.match(readRepo("README.md"), /qwen3-coder-next[\s\S]{0,80}passed the guard/);
+  // README records that qwen3-coder-next passed the witness-coaching guard, that the Local model box
+  // has not been probed, and that the guard still checks every answer-prep result.
+  const readme = readRepo("README.md");
+  assert.match(readme, /qwen3-coder-next[\s\S]{0,80}passed the guard/);
+  assert.match(readme, /has not been put through the witness-preparation probe yet/);
+  assert.match(readme, /guard still checks every answer-prep\s+result/);
+  // The launch card offers the default first and keeps qwen3-coder-next as a non-default choice.
+  const launch = YAML.parse(wf.doc.split("```orchestrator-launch")[1].split("```")[0]);
+  const field = launch.fields.find((f: { param: string }) => f.param === "prep_model");
+  assert.deepEqual(field.options, ["Local model box", passed]);
 
   const pinned: Array<{ label: string; model: string }> = [];
   const prepSteps: Array<Record<string, any>> = [];
@@ -127,17 +136,20 @@ test("16: deposition-prep runs answer-prep on prep_model, and only that step pin
     Object.values(obj).forEach(walk);
   };
   walk(wf.flow);
-  assert.deepEqual(pinned, [{ label: "answer-prep", model: param.default }]);
+  assert.deepEqual(pinned, [{ label: "answer-prep", model: passed }]);
   assert.equal(prepSteps.length, 2, "the pinned step and the Local-model-box step");
   assert.equal(prepSteps[0].task, prepSteps[1].task, "both copies run the same task");
 
-  // The switch chooses the pinned copy for exactly the default value and binds `prep` either way.
+  // The switch chooses the pinned copy only for qwen3-coder-next; the default falls to the unpinned
+  // copy (the app's Local model box), and `prep` is bound either way.
   const crossExam = wf.flow.steps[1].cases[0].then.steps;
   const sw = crossExam.find((s: { label?: string }) => s.label === "prep-model");
   assert.equal(sw.kind, "switch");
   assert.equal(sw.on, "{params.prep_model}");
-  assert.deepEqual(sw.cases[0].when, { eq: ["", param.default] });
-  assert.equal(sw.cases[0].then.model, param.default);
+  assert.equal(sw.cases.length, 1);
+  assert.deepEqual(sw.cases[0].when, { eq: ["", passed] });
+  assert.notDeepEqual(sw.cases[0].when, { eq: ["", param.default] });
+  assert.equal(sw.cases[0].then.model, passed);
   assert.equal(sw.else.model, undefined);
   assert.equal(sw.as, "prep");
 });

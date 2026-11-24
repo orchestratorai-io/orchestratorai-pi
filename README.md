@@ -182,9 +182,12 @@ testimony every time; qwen3.8 obeyed the rules into paralysis and never delivere
 it is the newest and largest model on the machine. `.pi/workflows/prep-probe-*.yaml` are the probes;
 the models must be registered in `~/.pi/agent/models.json` for an explicit `model:` to validate.
 `deposition-prep` therefore runs its answer-preparation step (Predicted cross-exam mode only) on its
-`prep_model` param, default `ollama/qwen3-coder-next:q4_K_M`; choose "Local model box" to run it on the
-app's Local model like every other step. pi-agents does not fill params into `model:`, so the YAML
-switches between two copies of that step. The model has to be installed in Ollama for the default to run.
+`prep_model` param. Its default is "Local model box": the step runs on the app's Local model like every
+other step (`qwen3.6:35b-mlx` today), which has not been put through the witness-preparation probe yet.
+Choose `ollama/qwen3-coder-next:q4_K_M` to run it on the model that passed the probe; that model has to be
+installed in Ollama to run. Either way the typed witness-coaching guard still checks every answer-prep
+result before it ships. pi-agents does not fill params into `model:`, so the YAML switches between two
+copies of that step.
 
 **Local-model rule of thumb:** pi-agents requires every agent to finish by calling
 `pi_agents_submit_result`; local models drop that when the prompt gets very large. Keep each node's
