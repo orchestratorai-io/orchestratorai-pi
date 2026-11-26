@@ -138,19 +138,32 @@ flow:
         Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
       as: memo
 
-    - kind: agent
-      profile: attorney-gate
-      label: attorney-gate
-      task: |-
-        Call the attorney_review tool exactly once with:
-        - run_id: "{params.run_id}"
-        - title: "Deal memo ready for partner review"
-        - summary: the complete MEMO below, unchanged, preceded by one line:
-          "Approve to finalize, or request changes with the revisions for one re-draft."
-        Then submit the tool's returned text (the DECISION and COMMENT lines) verbatim as your result.
+    # A saved workflow typed in Pi has no app run id and therefore nobody who can answer
+    # an app checkpoint. Skip it in code instead of spawning an agent with an unavailable gate.
+    - kind: switch
+      label: partner-review
+      on: "{params.run_id}"
+      cases:
+        - when: { eq: ["", ""] }
+          then:
+            kind: value
+            value: |-
+              DECISION: skipped
+              COMMENT: No OrchestratorAI console run id was supplied; partner review is required before circulation.
+      else:
+        kind: agent
+        profile: attorney-gate
+        label: attorney-gate
+        task: |-
+          Call the attorney_review tool exactly once with:
+          - run_id: "{params.run_id}"
+          - title: "Deal memo ready for partner review"
+          - summary: the complete MEMO below, unchanged, preceded by one line:
+            "Approve to finalize, or request changes with the revisions for one re-draft."
+          Then submit the tool's returned text (the DECISION and COMMENT lines) verbatim as your result.
 
-        MEMO:
-        {memo}
+          MEMO:
+          {memo}
       as: gate
 
     - kind: agent
@@ -167,6 +180,8 @@ flow:
         Under ## Attorney review focus list unchecked tasks `- [ ] SEVERITY - issue; action`: every
         unresolved deal-breaker is HIGH, every citation the synthesis could not validate is HIGH, open
         items are MEDIUM. Prefer 4-8 items.
+        Keep the complete final memo under 2,700 words. Do not add facts or deal terms that are absent
+        from MEMO; proposals must be clearly labelled as recommendations.
 
         PARTNER DECISION:
         {gate}

@@ -153,3 +153,21 @@ test("16: deposition-prep runs answer-prep on prep_model (default Local model bo
   assert.equal(sw.else.model, undefined);
   assert.equal(sw.as, "prep");
 });
+
+test("deal-memo stays bounded and skips the app-only partner gate for terminal runs", () => {
+  const wf = YAML.parse(readRepo(".pi/workflows/deal-memo.yaml"));
+  const review = wf.flow.steps.find((s: { label?: string }) => s.label === "partner-review");
+  assert.equal(review.kind, "switch");
+  assert.equal(review.on, "{params.run_id}");
+  assert.deepEqual(review.cases[0].when, { eq: ["", ""] });
+  assert.match(review.cases[0].then.value, /DECISION: skipped/);
+  assert.equal(review.else.profile, "attorney-gate");
+  assert.equal(review.as, "gate");
+
+  const drafter = readRepo(".pi/agents/deal-memo-drafter.md");
+  const synthesizer = readRepo(".pi/agents/deal-memo-synthesizer.md");
+  assert.match(drafter, /under 500 words/);
+  assert.match(drafter, /Do not invent dates, dollar amounts, percentages/);
+  assert.match(synthesizer, /under 2,500 words/);
+  assert.match(synthesizer, /Do not add dates, deal economics, legal requirements/);
+});
