@@ -50,6 +50,12 @@ flow:
         posture), evidence (which contested items are admitted and which excluded, by name from the
         record), and witnesses (credibility modifiers by name).
 
+        CLOSED RECORD: use only evidence and witnesses named in the record. Each field must stay under
+        80 words. Use generic judge and jury descriptions; never invent names, vote splits, demographics,
+        instructions, venue facts, or prior rulings. All scenario details are assumptions, not facts or law.
+        Preserve asserted, contested, and not-yet-ruled admissibility status exactly; an assumed scenario
+        outcome may not claim the real court resolved the issue or invent a legal reason for it.
+
         Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
       json:
         type: object
@@ -94,6 +100,9 @@ flow:
                   Evidence admitted/excluded in this simulation: {item.evidence}
                   Witness credibility in this simulation: {item.witnesses}
 
+                  Stay under 600 words. Use only the record and this parameter set. Do not add law,
+                  dates, amounts, procedural events, or rulings. Prefix jury inferences with `Argument:`.
+
                   Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
               defense:
                 kind: agent
@@ -106,6 +115,9 @@ flow:
                   Judge: {item.judge}
                   Evidence admitted/excluded in this simulation: {item.evidence}
                   Witness credibility in this simulation: {item.witnesses}
+
+                  Stay under 600 words. Use only the record and this parameter set. Do not add law,
+                  dates, amounts, procedural events, or rulings. Prefix jury inferences with `Argument:`.
 
                   Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
             as: args
@@ -124,6 +136,13 @@ flow:
 
               DEFENCE CASE:
               {args.defense}
+
+              Stay under 250 words. Use only these inputs. A defense verdict MUST use damages 0; a
+              plaintiff or mixed verdict MUST copy one exact nonzero dollar figure printed in the
+              record and name its damages theory. Do not calculate a midpoint, compromise, percentage,
+              multiplier, or new figure. Never invent a judge name, vote count, jury instruction,
+              damages cap, or quote. Begin reasoning with `In this simulation,` and do not state actual
+              law, rulings, or facts beyond the record.
 
               Return JSON with simulationId ("{item.id}"), verdict, damages (a number, 0 for a defence
               verdict), keyFactors (2-4 short strings), and reasoning.
@@ -154,6 +173,11 @@ flow:
         VERDICTS:
         {verdicts}
 
+        Stay under 1,200 words. Show arithmetic for rates, mean, median, and expected value. With fewer
+        than 10 outcomes report min/max rather than interpolated percentiles. Label every sensitivity
+        conclusion `Simulation association:` and do not claim causation, probability, prediction, or
+        statistical significance.
+
         Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
       as: stats
 
@@ -180,17 +204,42 @@ flow:
         VERDICTS:
         {verdicts}
 
+        CLOSED RECORD: stay under 2,000 words. Preserve supplied statistics; do not add or recalculate
+        facts, law, dates, amounts, procedural events, or causal claims. Attribute verdict reasoning to
+        its SIM id. Prefix synthesis with `Simulation assessment:` and advice with `Recommendation:`.
+        Never turn scenario frequency into probability. Never say a simulated judge or jury actually
+        ruled, an assumption caps or triggers damages, or a defense legally absolves a party. The
+        simulation log may contain only SIM id, verdict, damages, supplied key factors, and at most one
+        reasoning sentence; omit invented names, votes, instructions, quotes, and narrative detail.
+        If admissibility is asserted, contested, or not yet ruled on in the source, say so and describe
+        admission/exclusion only as a scenario assumption; never say an exception was established.
+        Every checklist line MUST begin exactly `- [ ] HIGH —`,
+        `- [ ] MEDIUM —`, or `- [ ] LOW —`; admission, liability, damages, and sample-size issues may
+        not be LOW.
+
         Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
       as: draft
 
     # Quality guards (see the orchestrator-guards block in doc): Clef checks the finished report,
     # and the result is appended to it, so the attorney reviews the report and its guard section together.
-    - kind: agent
-      profile: guard-gate
+    - kind: switch
       label: quality-guards
-      task: |-
-        Call the report_guard tool exactly once with run_id "{params.run_id}".
-        Then submit the tool's returned Markdown verbatim as your result.
+      on: "{params.run_id}"
+      cases:
+        - when: { eq: ["", ""] }
+          then:
+            kind: value
+            value: |-
+              ## Quality guards
+
+              - **Quality guards: Pending scorecard.** Terminal runs are scored locally after completion.
+      else:
+        kind: agent
+        profile: guard-gate
+        label: quality-guards-agent
+        task: |-
+          Call the report_guard tool exactly once with run_id "{params.run_id}".
+          Then submit the tool's returned Markdown verbatim as your result.
       as: guards
 
     - kind: value

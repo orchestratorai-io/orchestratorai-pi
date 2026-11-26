@@ -280,3 +280,32 @@ test("due diligence stays source-bound and skips app gates in terminal runs", ()
   assert.match(readRepo(".pi/agents/dd-report-writer.md"), /never list gate status, skipped decisions/);
   assert.match(readRepo(".pi/agents/dd-report-writer.md"), /sub-processors HIGH or MEDIUM, never LOW/);
 });
+
+test("trial simulator bounds scenario context and labels simulated conclusions", () => {
+  const wf = YAML.parse(readRepo(".pi/workflows/monte-carlo-trial-simulator.yaml"));
+  const simulate = wf.flow.steps.find((s: { label?: string }) => s.label === "simulate");
+  assert.equal(simulate.concurrency, 1);
+  const argument = simulate.body.steps.find((s: { label?: string }) => s.label === "argument");
+  for (const branch of Object.values(argument.branches) as Array<{ task: string }>) {
+    assert.match(branch.task, /Stay under 600 words/);
+    assert.match(branch.task, /Prefix jury inferences with `Argument:`/);
+  }
+  const statistics = wf.flow.steps.find((s: { label?: string }) => s.label === "statistics");
+  assert.match(statistics.task, /fewer\s+than 10 outcomes report min\/max rather than interpolated percentiles/);
+  assert.match(statistics.task, /Label every sensitivity\s+conclusion `Simulation association:`/);
+  const report = wf.flow.steps.find((s: { label?: string }) => s.label === "report");
+  assert.match(report.task, /CLOSED RECORD: stay under 2,000 words/);
+  assert.match(report.task, /Never say a simulated judge or jury actually\s+ruled/);
+  assert.match(report.task, /Never turn scenario frequency into probability/);
+  assert.match(report.task, /simulation log may contain only SIM id, verdict, damages/);
+  assert.match(report.task, /never say an exception was established/);
+  assert.match(report.task, /Every checklist line MUST begin exactly/);
+  const guard = wf.flow.steps.find((s: { label?: string }) => s.label === "quality-guards");
+  assert.equal(guard.kind, "switch");
+  assert.equal(guard.on, "{params.run_id}");
+  for (const name of ["trial-parameter-designer", "trial-advocate", "trial-jury", "trial-statistician", "trial-report-writer"]) {
+    assert.match(readRepo(`.pi/agents/${name}.md`), /thinking: off/);
+  }
+  assert.match(readRepo(".pi/agents/trial-jury.md"), /A plaintiff or mixed verdict must copy one exact nonzero dollar figure/);
+  assert.match(readRepo(".pi/agents/trial-report-writer.md"), /Every attorney-review checklist line must begin exactly/);
+});
