@@ -171,3 +171,46 @@ test("deal-memo stays bounded and skips the app-only partner gate for terminal r
   assert.match(synthesizer, /under 2,500 words/);
   assert.match(synthesizer, /Do not add dates, deal economics, legal requirements/);
 });
+
+test("adversarial-brief keeps debate analysis source-bound and terminal runs deterministic", () => {
+  const wf = YAML.parse(readRepo(".pi/workflows/adversarial-brief.yaml"));
+  const threshold = wf.params.find((p: { name: string }) => p.name === "severity_threshold");
+  const launch = YAML.parse(wf.doc.split("```orchestrator-launch")[1].split("```")[0]);
+  const thresholdField = launch.fields.find((f: { param: string }) => f.param === "severity_threshold");
+  assert.equal(threshold.default, "10");
+  assert.deepEqual(thresholdField.options, ["5", "6", "7", "8", "9", "10"]);
+  const debateTeams: Array<Record<string, any>> = [];
+  const collectTeams = (node: unknown) => {
+    if (Array.isArray(node)) return node.forEach(collectTeams);
+    if (!node || typeof node !== "object") return;
+    const obj = node as Record<string, any>;
+    if (obj.kind === "parallel" && ["blue-team", "red-team"].includes(obj.label)) debateTeams.push(obj);
+    Object.values(obj).forEach(collectTeams);
+  };
+  collectTeams(wf.flow);
+  assert.equal(debateTeams.length, 4);
+  for (const team of debateTeams) assert.equal(team.concurrency, 1, team.label);
+  for (const label of ["attorney-gate", "quality-guards"]) {
+    const step = wf.flow.steps.find((s: { label?: string }) => s.label === label);
+    assert.equal(step.kind, "switch", label);
+    assert.equal(step.on, "{params.run_id}", label);
+    assert.deepEqual(step.cases[0].when, { eq: ["", ""] }, label);
+    assert.equal(step.as, label === "attorney-gate" ? "gate" : "guards", label);
+  }
+  const synthesizer = readRepo(".pi/agents/brief-synthesizer.md");
+  const writer = readRepo(".pi/agents/brief-report-writer.md");
+  const analyst = readRepo(".pi/agents/brief-analyst.md");
+  const fortifier = readRepo(".pi/agents/brief-fortifier.md");
+  assert.match(synthesizer, /Stay under 1,800 words/);
+  assert.match(synthesizer, /Prefix conclusions drawn from the debate with `Debate assessment:`/);
+  assert.match(writer, /Stay under 3,500 words/);
+  assert.match(writer, /Do not state that a party conceded, filed, invoked a protocol/);
+  assert.match(writer, /Every review-checklist line must begin exactly/);
+  assert.match(analyst, /## Original brief/);
+  assert.match(analyst, /complete source brief verbatim/);
+  assert.match(fortifier, /tools: \[\]/);
+  assert.match(fortifier, /complete original brief is supplied in the task/);
+  assert.match(fortifier, /decision is `skipped`, apply no recommendations/);
+  const fortifierStep = wf.flow.steps.find((s: { label?: string }) => s.label === "fortifier");
+  assert.match(fortifierStep.task, /DECISION is skipped, apply no recommendations/);
+});

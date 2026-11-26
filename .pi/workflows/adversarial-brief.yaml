@@ -4,7 +4,7 @@ trigger: when the user asks to stress-test, red-team, or pressure-test a brief, 
 params:
   - { name: target, required: true, description: "Path to the brief, motion, or memo" }
   - { name: context, default: "Stress-test this brief before filing. Identify the attacks most likely to succeed and how to fortify against them.", description: Objective }
-  - { name: severity_threshold, default: "7", description: "Debate continues while any attack scores at or above this severity (1-10)" }
+  - { name: severity_threshold, default: "10", description: "Debate continues while any attack scores at or above this severity (1-10)" }
   - { name: run_id, default: "", description: "OrchestratorAI run id (set by the app; leave empty from the TUI)" }
 doc: |-
   Composition: brief-analyst → round 1 { Blue ×3 ∥ → Red ×3 ∥ → judge } → switch(converged? skip : round 2)
@@ -18,7 +18,7 @@ doc: |-
   file: { label: brief, param: target }
   fields:
     - { param: context, label: Objective, kind: text }
-    - { param: severity_threshold, label: Severity bar, kind: choice, options: ["5", "6", "7", "8", "9"] }
+    - { param: severity_threshold, label: Severity bar, kind: choice, options: ["5", "6", "7", "8", "9", "10"] }
   samples:
     - { title: Motion to dismiss (synthetic), path: fixtures/litigation/motion-to-dismiss.md }
   review:
@@ -52,6 +52,7 @@ flow:
         - kind: parallel
           label: blue-team
           onError: collect
+          concurrency: 1
           branches:
             argument:
               kind: agent
@@ -90,6 +91,7 @@ flow:
         - kind: parallel
           label: red-team
           onError: collect
+          concurrency: 1
           branches:
             argument:
               kind: agent
@@ -177,6 +179,7 @@ flow:
           - kind: parallel
             label: blue-team
             onError: collect
+            concurrency: 1
             branches:
               argument:
                 kind: agent
@@ -215,6 +218,7 @@ flow:
           - kind: parallel
             label: red-team
             onError: collect
+            concurrency: 1
             branches:
               argument:
                 kind: agent
@@ -312,34 +316,49 @@ flow:
         Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
       as: stress_test
 
-    - kind: agent
-      profile: attorney-gate
+    - kind: switch
       label: attorney-gate
-      task: |-
-        Call the attorney_review tool exactly once with:
-        - run_id: "{params.run_id}"
-        - title: "Accept fortification recommendations"
-        - summary: the complete STRESS TEST text below, unchanged, preceded by one line:
-          "Approve to apply all recommendations, or request changes and list the R-numbers to apply (e.g. 'apply R1, R3')."
-        Then submit the tool's returned text (the DECISION and COMMENT lines) verbatim as your result.
+      on: "{params.run_id}"
+      cases:
+        - when: { eq: ["", ""] }
+          then:
+            kind: value
+            value: |-
+              DECISION: skipped
+              COMMENT: No OrchestratorAI console run id was supplied; attorney review is required before filing.
+      else:
+        kind: agent
+        profile: attorney-gate
+        label: attorney-gate-agent
+        task: |-
+          Call the attorney_review tool exactly once with:
+          - run_id: "{params.run_id}"
+          - title: "Accept fortification recommendations"
+          - summary: the complete STRESS TEST text below, unchanged, preceded by one line:
+            "Approve to apply all recommendations, or request changes and list the R-numbers to apply (e.g. 'apply R1, R3')."
+          Then submit the tool's returned text (the DECISION and COMMENT lines) verbatim as your result.
 
-        STRESS TEST:
-        {stress_test}
+          STRESS TEST:
+          {stress_test}
       as: gate
 
     - kind: agent
       profile: brief-fortifier
       label: fortifier
       task: |-
-        Revise the brief at {params.target} (read the complete original text first).
+        Revise the complete original brief embedded under `## Original brief` in BRIEF SOURCE below.
 
-        ATTORNEY DECISION (if DECISION is approved with no R-numbers, apply every recommendation; if it lists
+        ATTORNEY DECISION (if DECISION is skipped, apply no recommendations and reproduce the original brief verbatim;
+        if DECISION is approved with no R-numbers, apply every recommendation; if it lists
         R-numbers, apply only those; if it is changes_requested with no R-numbers, apply only recommendations
         tied to critical weaknesses; if skipped, apply every recommendation):
         {gate}
 
         RECOMMENDATIONS (from the stress test):
         {stress_test}
+
+        BRIEF SOURCE:
+        {structure}
 
         Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
       as: fortified
@@ -359,6 +378,10 @@ flow:
         - [ ] SEVERITY — issue; attorney question or recommended action
         Use SEVERITY in {HIGH, MEDIUM, LOW} (map judge severity ≥8 HIGH, 5–7 MEDIUM, <5 LOW). Prefer 4–8 items; lead with HIGH.
         Every unverified counter-authority must appear as a `[VERIFY]` item.
+        Every checklist line MUST begin exactly with `- [ ] HIGH —`, `- [ ] MEDIUM —`, or `- [ ] LOW —`.
+        Put `[VERIFY]` after that required severity prefix, never in its place.
+        Keep the complete report under 3,500 words. Prefix conclusions created by the debate with
+        `Debate assessment:` and do not present them as facts from the source brief.
 
         STRESS TEST:
         {stress_test}
@@ -374,12 +397,23 @@ flow:
 
     # Quality guards (see the orchestrator-guards block in doc): Clef checks the finished report,
     # and the result is appended to it, so the attorney reviews the report and its guard section together.
-    - kind: agent
-      profile: guard-gate
+    - kind: switch
       label: quality-guards
-      task: |-
-        Call the report_guard tool exactly once with run_id "{params.run_id}".
-        Then submit the tool's returned Markdown verbatim as your result.
+      on: "{params.run_id}"
+      cases:
+        - when: { eq: ["", ""] }
+          then:
+            kind: value
+            value: |-
+              ## Quality guards
+              Terminal run: score with `npm run guards -- --workflow=adversarial-brief --run=<run-id>`.
+      else:
+        kind: agent
+        profile: guard-gate
+        label: quality-guards-agent
+        task: |-
+          Call the report_guard tool exactly once with run_id "{params.run_id}".
+          Then submit the tool's returned Markdown verbatim as your result.
       as: guards
 
     - kind: value
