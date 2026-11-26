@@ -102,6 +102,20 @@ final class WorkflowsAndModelsTests: XCTestCase {
         XCTAssertTrue(extras[0].isReady)
     }
 
+    func testSeedWorkflowIsListedOnceUnderItsYAMLNameWhileMissingSeedsKeepPlaceholders() throws {
+        let dir = try project([
+            "contract-review.yaml": workflowYAML(
+                name: "legal-contract-review",
+                launch: "```orchestrator-launch\ngroup: document-management\n```"
+            ),
+        ])
+
+        let catalog = LegalWorkflowCatalog.workflows(projectDirectory: dir)
+        XCTAssertEqual(catalog.filter { $0.launch?.workflowName == "legal-contract-review" }.map(\.id), ["legal-contract-review"])
+        XCTAssertFalse(catalog.contains { $0.id == "contract-review" })
+        XCTAssertEqual(catalog.first { $0.id == "due-diligence" }?.status, .comingSoon)
+    }
+
     func testABrokenLaunchBlockGivesNoSpecAndTheWorkflowIsNotReady() throws {
         let dir = try project([
             "contract-review.yaml": workflowYAML(name: "contract-review", launch: "```orchestrator-launch\ngroup: [unclosed\n```"),

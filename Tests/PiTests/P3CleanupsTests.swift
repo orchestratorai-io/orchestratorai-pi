@@ -61,6 +61,37 @@ final class P3CleanupsTests: XCTestCase {
         XCTAssertNotNil(RunStore(projectDirectory: dir))
     }
 
+    func testMigrationFailsAtAHeldWriteLockWithoutAddingAnyColumns() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("pi-store-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try FileManager.default.createDirectory(at: dir.appendingPathComponent("data"), withIntermediateDirectories: true)
+        let path = dir.appendingPathComponent("data/orchestrator.sqlite").path
+        try seed(path, sql: """
+        CREATE TABLE runs (id TEXT PRIMARY KEY, workflow TEXT NOT NULL, title TEXT NOT NULL, source_document TEXT,
+          params_json TEXT NOT NULL, model TEXT, pi_run_id TEXT, status TEXT NOT NULL, error TEXT,
+          result_markdown TEXT, result_json TEXT, agents INTEGER, created_at TEXT NOT NULL,
+          started_at TEXT, completed_at TEXT, updated_at TEXT NOT NULL);
+        CREATE TABLE run_events (seq INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL, at TEXT NOT NULL, type TEXT NOT NULL,
+          node_path TEXT, node_instance TEXT, node_kind TEXT, agent TEXT, label TEXT, summary TEXT NOT NULL,
+          detail TEXT, payload_json TEXT);
+        """)
+
+        var blocker: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(path, &blocker), SQLITE_OK)
+        defer { sqlite3_close(blocker) }
+        XCTAssertEqual(sqlite3_exec(blocker, "BEGIN IMMEDIATE", nil, nil, nil), SQLITE_OK)
+
+        XCTAssertNil(RunStore(projectDirectory: dir, busyTimeoutMilliseconds: 20))
+
+        XCTAssertEqual(sqlite3_exec(blocker, "ROLLBACK", nil, nil, nil), SQLITE_OK)
+        var check: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(path, &check), SQLITE_OK)
+        defer { sqlite3_close(check) }
+        for migration in RunStore.migrations {
+            XCTAssertFalse(columns(of: migration.table, in: check).contains(migration.column), migration.column)
+        }
+    }
+
     func testMigrationListMatchesStoreTs() throws {
         let storeTs = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
@@ -252,5 +283,16 @@ final class P3CleanupsTests: XCTestCase {
             sqlite3_free(err)
             XCTFail("seed failed: \(message)")
         }
+    }
+
+    private func columns(of table: String, in db: OpaquePointer?) -> Set<String> {
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "PRAGMA table_info(\(table))", -1, &stmt, nil) == SQLITE_OK else { return [] }
+        defer { sqlite3_finalize(stmt) }
+        var result = Set<String>()
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            if let text = sqlite3_column_text(stmt, 1) { result.insert(String(cString: text)) }
+        }
+        return result
     }
 }

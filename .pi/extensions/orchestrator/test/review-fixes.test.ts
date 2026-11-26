@@ -144,6 +144,44 @@ test("two near-simultaneous resumes of one run in this Pi start it once", async 
   }
 });
 
+test("two Journal instances on separate store connections cannot resume one run, and a failed start releases the claim", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-resume-claim-test-"));
+  const db1 = new RunStore(dir);
+  const db2 = new RunStore(dir);
+  let unblock!: () => void;
+  const blocked = new Promise<void>((resolve) => { unblock = resolve; });
+  let firstStarted!: () => void;
+  const starting = new Promise<void>((resolve) => { firstStarted = resolve; });
+  let starts = 0;
+  const first = new Journal(() => db1, { async start() {
+    starts++;
+    firstStarted();
+    await blocked;
+    throw new Error("deliberate start failure");
+  } }, { pid: SELF_PID, pidAlive: () => false, ownerExitWaitMs: 0 });
+  const second = new Journal(() => db2, { async start() {
+    starts++;
+    return { runId: "pi-second" };
+  } }, { pid: OTHER_PID, pidAlive: () => false, ownerExitWaitMs: 0 });
+  try {
+    stoppedRun(db1, "run-1", "NDA", 9999);
+    const failedStart = first.resume(db1, { runId: "run-1" });
+    await starting;
+    await assert.rejects(second.resume(db2, { runId: "run-1" }), /another Pi is already resuming this run/);
+    assert.equal(starts, 1, "both processes reached pi-agents start");
+
+    unblock();
+    assert.equal((await failedStart).ok, false);
+    assert.equal((await second.resume(db2, { runId: "run-1" })).ok, true, "failed start left the run claimed");
+    assert.equal(starts, 2);
+  } finally {
+    unblock();
+    db2.close();
+    db1.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("two resumes of different runs in flight at once each land on their own run", async () => {
   // pi-agents' start replies later; both resumes are pending when each run_created arrives.
   const { db, journal, cleanup } = setup(async (params, runId, j) => {

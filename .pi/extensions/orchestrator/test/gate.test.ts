@@ -239,6 +239,50 @@ test("a decision recorded just as the gate times out is used, not cancelled", as
   }
 });
 
+test("a gate cancelled by Stop just as it times out returns cancelled without a timeout event", async () => {
+  const { db, run, app, cleanup } = setup();
+  try {
+    const realTimeout = db.timeOutCheckpointIfPending.bind(db);
+    let raced = false;
+    db.timeOutCheckpointIfPending = (id: string, reason: string) => {
+      raced = true;
+      db.cancelPendingCheckpoints(run.id, "Stopped by the user.");
+      return realTimeout(id, reason);
+    };
+
+    const result = await attorneyGate(db, run, { title: TITLE, summary: "Q?" }, undefined, { ...OPTS, maxWaitMs: -1 });
+    assert.ok(raced, "the cancellation race was not staged");
+    assert.equal(text(result), "DECISION: cancelled\nCOMMENT: Stopped by the user.");
+    assert.equal(db.getCheckpoint(result.details.checkpointId as string)?.status, "cancelled");
+    const events = app.prepare("SELECT type FROM run_events WHERE run_id = ? ORDER BY seq").all(run.id) as Array<{ type: string }>;
+    assert.deepEqual(events.map((event) => event.type), ["gate_requested"]);
+  } finally {
+    cleanup();
+  }
+});
+
+test("duplicate waiters return one stored timeout and write one timeout event", async () => {
+  const { db, run, app, cleanup } = setup();
+  try {
+    const params = { title: TITLE, summary: "Same pending question" };
+    // Both calls observe the shared pending row before waking past the deadline.
+    const opts = { ...OPTS, pollMs: 20, maxWaitMs: 10 };
+    const [first, duplicate] = await Promise.all([
+      attorneyGate(db, run, params, undefined, opts),
+      attorneyGate(db, run, params, undefined, opts),
+    ]);
+
+    assert.equal(text(first), "DECISION: timed_out\nCOMMENT: No attorney decision was recorded in time.");
+    assert.equal(text(duplicate), text(first));
+    assert.equal(first.details.checkpointId, duplicate.details.checkpointId);
+    assert.equal(db.getCheckpoint(first.details.checkpointId as string)?.status, "timed_out");
+    const events = app.prepare("SELECT type FROM run_events WHERE run_id = ? ORDER BY seq").all(run.id) as Array<{ type: string }>;
+    assert.deepEqual(events.map((event) => event.type), ["gate_requested", "gate_timed_out"]);
+  } finally {
+    cleanup();
+  }
+});
+
 // ---- Terminal runs: no 12-hour wait (resume fix, item 5)
 
 test("from a terminal Pi (no console attached) the gate is skipped instead of waiting 12 hours", async () => {

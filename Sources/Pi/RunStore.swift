@@ -226,17 +226,23 @@ final class RunStore: @unchecked Sendable {
     private var db: OpaquePointer?
     let path: String
 
-    init?(projectDirectory: URL) {
+    init?(projectDirectory: URL, busyTimeoutMilliseconds: Int32 = 5_000) {
         let url = projectDirectory.appendingPathComponent("data/orchestrator.sqlite")
         path = url.path
         try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         guard sqlite3_open_v2(path, &db, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK else {
             return nil
         }
-        exec("PRAGMA journal_mode = WAL;")
-        exec("PRAGMA busy_timeout = 5000;")
-        exec(Self.schema)
-        migrate()
+        // Install the busy handler before WAL negotiation: journal_mode itself
+        // needs a lock and concurrent opens must wait here too.
+        guard sqlite3_busy_timeout(db, busyTimeoutMilliseconds) == SQLITE_OK,
+              exec("PRAGMA journal_mode = WAL;"),
+              exec(Self.schema),
+              migrate() else {
+            sqlite3_close(db)
+            db = nil
+            return nil
+        }
     }
 
     /// Columns added after the first release, the same list as `MIGRATIONS` in
@@ -254,17 +260,25 @@ final class RunStore: @unchecked Sendable {
         ("runs", "heartbeat_at", "ALTER TABLE runs ADD COLUMN heartbeat_at TEXT"),
         ("runs", "origin", "ALTER TABLE runs ADD COLUMN origin TEXT"),
         ("runs", "resume_rebinds", "ALTER TABLE runs ADD COLUMN resume_rebinds INTEGER NOT NULL DEFAULT 0"),
+        ("runs", "resume_claim_token", "ALTER TABLE runs ADD COLUMN resume_claim_token TEXT"),
     ]
 
     /// Applies `migrations` idempotently, in one write transaction so a Pi opening the
     /// store at the same moment takes turns with the app instead of racing on a column.
     /// A column the other side added in the meantime makes the ALTER fail harmlessly.
-    private func migrate() {
-        exec("BEGIN IMMEDIATE;")
+    private func migrate() -> Bool {
+        guard exec("BEGIN IMMEDIATE;") else { return false }
         for m in Self.migrations where !columns(of: m.table).contains(m.column) {
-            exec(m.ddl + ";")
+            guard exec(m.ddl + ";") else {
+                _ = exec("ROLLBACK;")
+                return false
+            }
         }
-        exec("COMMIT;")
+        guard exec("COMMIT;") else {
+            _ = exec("ROLLBACK;")
+            return false
+        }
+        return true
     }
 
     func columns(of table: String) -> Set<String> {
@@ -292,7 +306,7 @@ final class RunStore: @unchecked Sendable {
       result_markdown TEXT, result_json TEXT, agents INTEGER, created_at TEXT NOT NULL,
       started_at TEXT, completed_at TEXT, updated_at TEXT NOT NULL,
       flow_json TEXT, display TEXT, resume_offset INTEGER NOT NULL DEFAULT 0, resumes INTEGER NOT NULL DEFAULT 0,
-      owner_pid INTEGER, heartbeat_at TEXT, resume_rebinds INTEGER NOT NULL DEFAULT 0
+      owner_pid INTEGER, heartbeat_at TEXT, resume_rebinds INTEGER NOT NULL DEFAULT 0, resume_claim_token TEXT
     );
     CREATE INDEX IF NOT EXISTS runs_pi_run_id ON runs(pi_run_id);
     CREATE INDEX IF NOT EXISTS runs_created_at ON runs(created_at);
@@ -648,8 +662,9 @@ final class RunStore: @unchecked Sendable {
 
     // MARK: SQLite plumbing
 
-    private func exec(_ sql: String) {
-        sqlite3_exec(db, sql, nil, nil, nil)
+    @discardableResult
+    private func exec(_ sql: String) -> Bool {
+        sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK
     }
 
     /// Rows changed by the last statement on this connection.

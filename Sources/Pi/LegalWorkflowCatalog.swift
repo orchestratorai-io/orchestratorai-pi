@@ -106,7 +106,7 @@ enum LegalWorkflowCatalog {
             let yamlURL = workflowsDir.appendingPathComponent("\(entry.id).yaml")
             let launch = FileManager.default.fileExists(atPath: yamlURL.path) ? WorkflowLaunchSpec.load(from: yamlURL) : nil
             return WorkflowDefinition(
-                id: entry.id,
+                id: launch?.workflowName ?? entry.id,
                 title: launch?.title ?? entry.title,
                 icon: launch?.icon ?? entry.icon,
                 description: launch.map { $0.description.isEmpty ? entry.description : $0.description } ?? entry.description,
