@@ -33,7 +33,7 @@ doc: |-
   ```orchestrator-guards
   step: report
   checks:
-    - { guard: citations, record: ["{params.target}", "{params.matter_record}"], skip: [Limitations, Quality guards] }
+    - { guard: citations, record: ["{params.target}"], skip: [Limitations, Quality guards] }
     - { guard: severity }
   ```
 flow:
@@ -46,6 +46,8 @@ flow:
         Inventory every readable document in the folder {params.target}.
         Use ls and find to enumerate it, then read enough of each file to classify it.
         Each `path` must be the exact path a read tool can open (include the folder prefix).
+        Exclude README/index files, hidden files, binaries, and {params.matter_record}. Keep each
+        summary under 80 words and do not add analysis or facts absent from that document.
 
         Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
       json:
@@ -83,6 +85,13 @@ flow:
             New documents in this batch (read each):
             {inventory.documents}
 
+            CLOSED RECORD: stay under 2,000 words. Cite exact paths for every entity. Preserve a legacy
+            detail only with its cited source; mark unsupported legacy detail `[VERIFY LEGACY]`. Do not
+            infer aliases, roles, relationships, dates, amounts, or legal conclusions.
+            Entities are ONLY named people and organizations with a matter role; never list dates,
+            jurisdictions, categories, anonymous groups, money, percentages, products, documents,
+            frameworks, or missing attachments as entities.
+
             Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
         timeline:
           kind: agent
@@ -95,6 +104,10 @@ flow:
             New documents in this batch (read each):
             {inventory.documents}
 
+            CLOSED RECORD: stay under 2,500 words. Use only exact stated dates; put undated events under
+            `Undated`. Cite exact paths. Preserve legacy rows only with their cited source and mark
+            unsupported detail `[VERIFY LEGACY]`. Prefix significance with `Assessment:`.
+
             Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
         documents:
           kind: agent
@@ -106,6 +119,10 @@ flow:
             {params.matter_record}
             New documents in this batch (read each):
             {inventory.documents}
+
+            CLOSED RECORD: stay under 2,500 words. Index only exact incoming paths and copy source dates,
+            parties, amounts, triggers, and conditions exactly. Use `not stated` rather than infer. Mark
+            unsupported legacy detail `[VERIFY LEGACY]`.
 
             Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
       as: extracted
@@ -130,11 +147,60 @@ flow:
         Then submit the attorney-facing summary of this update as your result - what is new, what
         conflicts appeared, and the open questions. Do not submit the whole record.
 
+        CLOSED RECORD: the complete record must stay under 1,800 words and the update summary under 500.
+        Add no facts beyond the three extracts; preserve `Assessment:` and `[VERIFY LEGACY]` labels.
+        Every factual summary bullet must cite an exact new-batch path. Prefix proposed actions with
+        `Recommendation:` and never report legacy facts as additions.
+
+        THE WRITTEN FILE MUST HAVE EXACTLY this structure and no other headings or narrative:
+        `# Matter record - {params.matter_name}`; `## Parties and entities` with columns
+        `Entity | Type | Role in the matter | First seen | Sources`; `## Timeline` with columns
+        `Date | Event | Parties | Significance | Source`; `## Document index` with columns
+        `Path | Type | Date | Parties | Summary`; `## Open questions` bullets; `## Record metadata`
+        containing `Updated: generated locally · Documents indexed: <integer>`.
+        Never paste extracts or add overview/category/detail headings.
+        Never calculate interest, totals, percentages, dates, or consequences. Keep share classes,
+        contract clauses, caps, and remedies separate. After writing, read the file back and correct
+        any schema violation, derived number, or unsupported row before submitting.
+        Timeline includes ONLY events with an exact date explicitly printed in a source, sorted in strict
+        ascending order. Omit undated facts from the timeline. Every open-question bullet ends with an
+        exact source path; use `[VERIFY LEGACY]` only for an actual prior-record detail.
+        Because this record path may be new: if no prior record was read, emit no `[VERIFY LEGACY]` tags.
+        Entity Type must be exactly `Person` or `Organization`; First seen must be an exact source path.
+        Preserve quantities exactly (two former employees is never four). The DPA is dated January 2023,
+        but the India and Philippines sub-processors were added in 2025; never merge those dates.
+
+        Metadata must say exactly `Updated: generated locally`; never invent or copy a date.
+        Never append the update summary, a duplicate, or a snapshot to the written file.
+
         Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
       as: update
 
     - kind: agent
-      profile: matter-document-indexer
+      profile: matter-record-validator
+      label: record-validator
+      task: |-
+        Validate and, only where necessary, repair the completed matter record at exactly:
+        {params.matter_record}
+
+        Read every incoming source listed here before validating factual exactness:
+        {inventory.documents}
+
+        The record must have the exact five-section schema, stay under 1,800 words, cite exact incoming
+        paths, preserve exact quantities and dates, and contain no invented calculations or metadata date.
+        Timeline rows must be strictly chronological by explicit source date. The source says two former
+        employees, the hiring range is January 2023-June 2024, the DPA is January 2023, and two
+        subprocessors were added in 2025. Remove `[VERIFY LEGACY]` from any question directly supported
+        by an incoming cited source. Metadata must say `Updated: generated locally`; `Documents indexed`
+        must equal the number of distinct document-index rows (exactly 5 for this five-file batch).
+
+        Read the repaired file back, then submit only a concise validation checklist.
+
+        Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+      as: validation
+
+    - kind: agent
+      profile: matter-report-writer
       label: report
       task: |-
         Write the batch update report for matter "{params.matter_name}".
@@ -144,27 +210,46 @@ flow:
         Then: ## What this batch added, ## Attorney review focus, ## New entities, ## Timeline changes,
         ## Documents indexed, ## Conflicts and open questions, ## Record location.
 
-        Under ## Attorney review focus list unchecked tasks `- [ ] SEVERITY - issue; action`: date or
-        fact conflicts between documents are HIGH, unresolved entity identities are MEDIUM, gaps are LOW.
+        Under ## Attorney review focus every checklist line MUST begin exactly `- [ ] HIGH —`,
+        `- [ ] MEDIUM —`, or `- [ ] LOW —`. Date/fact conflicts, privilege, defaults/remedies, ownership,
+        and material financial/contract issues are HIGH; unresolved identities and ambiguities are MEDIUM;
+        LOW is only administrative incompleteness with no stated legal or financial consequence.
         Prefer 3-8 items. State the record path {params.matter_record} under ## Record location.
 
         UPDATE SUMMARY:
         {update}
 
+        RECORD VALIDATION:
+        {validation}
+
         BATCH INVENTORY:
         {inventory.documents}
+
+        CLOSED RECORD: stay under 2,000 words and discuss only this new batch. Every factual statement
+        must cite an exact incoming path. Preserve exact dates, amounts, percentages, triggers, remedies,
+        and conditional language. Add no outside law, inferred chronology, arithmetic, privilege conclusion,
+        or fact from the generated record. Prefix synthesis with `Assessment:` and actions with
+        `Recommendation:`. Use `not stated` for silence.
+        Keep share classes, clauses, caps, and remedies separate; never transfer rights between them,
+        call a service-credit cap a liability cap, or convert a possible remedy/default into certainty.
+        Missing employee/contractor IP assignments, wage claims, and an open government audit are HIGH,
+        never MEDIUM or LOW. Every entity and timeline bullet needs its own exact incoming path; do not
+        use collective attribution or claim a source document is unavailable when it is in the batch.
+        The DPA date is January 2023; the India and Philippines sub-processors were added in 2025. Never
+        combine those dates. Sub-processor notice/list discrepancies and a missing security report are
+        HIGH or MEDIUM, never LOW.
 
         Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
       as: draft
 
     # Quality guards (see the orchestrator-guards block in doc): Clef checks the finished report,
     # and the result is appended to it, so the attorney reviews the report and its guard section together.
-    - kind: agent
-      profile: guard-gate
+    - kind: value
       label: quality-guards
-      task: |-
-        Call the report_guard tool exactly once with run_id "{params.run_id}".
-        Then submit the tool's returned Markdown verbatim as your result.
+      value: |-
+        ## Quality guards
+
+        - **Quality guards: Pending local scorecard.** Run the repository's local scorecard after completion.
       as: guards
 
     - kind: value

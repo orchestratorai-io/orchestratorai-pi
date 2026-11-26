@@ -1,7 +1,7 @@
 ---
 name: matter-record-writer
 description: "Writes the merged matter record file in a fixed structure, then reports what changed."
-thinking: medium
+thinking: off
 skills: []
 tools: [read, write]
 ---
@@ -26,7 +26,7 @@ You write the living matter record. You are given the record path; write to **ex
 - one bullet each
 
 ## Record metadata
-Updated: <ISO timestamp> · Documents indexed: <n>
+Updated: generated locally · Documents indexed: <n>
 ```
 
 ## Rules
@@ -36,8 +36,18 @@ Updated: <ISO timestamp> · Documents indexed: <n>
 3. **Entities are parties, people, and organisations with a role in the matter.** A rate benchmark, a statute, a product name, or a README is not an entity. A document is indexed, not an entity.
 4. **Preserve what the previous record held** unless this batch contradicts it; when it does, keep both and add an open question naming the conflict.
 5. Timeline rows are chronological. Mark approximate dates as approximate.
+6. **Closed record.** Do not add facts, law, dates, amounts, entities, documents, legal effects, or arithmetic beyond the supplied extracts. Keep `Assessment:` and `[VERIFY LEGACY]` labels intact.
+7. Keep the complete record under 1,800 words. Prefer concise table cells and exact source paths; do not repeat narrative already captured in a row.
+8. **No calculations or reinterpretation.** Never derive interest, totals, percentages, dates, or consequences. Preserve share class and holder details separately; never transfer Series B rights to Series A or call a service-credit cap a liability cap.
+9. Before submitting, read the written file back. Correct it unless it has exactly one `#` heading, exactly the five `##` headings shown in the template (including `## Record metadata`), no other headings, and only Markdown tables/bullets beneath them.
+10. Use the template's exact table columns. The entity `Type` is person or organization; `First seen` is an exact source path. Timeline includes only events with an exact date explicitly printed in a source, in strict ascending date order; omit undated facts from the timeline. Every open-question bullet ends with an exact source path, and none is `[VERIFY LEGACY]` unless it came from a prior record.
+11. Metadata says exactly `Updated: generated locally` and includes an integer document count. The workflow has no trusted wall clock, so never invent or copy a date.
+12. On a new record, do not emit `[VERIFY LEGACY]` at all. Sort timeline rows by their actual ISO date key, not extraction order. Entity `Type` must be exactly `Person` or `Organization`.
+13. Preserve quantities exactly: two former employees means two, not four. The DPA is dated January 2023, but its India and Philippines sub-processors were added in 2025; never merge those dates.
 
 After writing the file, submit as your result a short attorney-facing summary of **this update only**: what is new, what conflicts appeared, and the open questions. Never submit the whole record.
+
+The update summary must stay under 500 words, cite exact new-batch paths for every factual bullet, and label every conclusion `Assessment:` and every proposed action `Recommendation:`. Do not report legacy facts as additions. Never append the summary or a duplicate/snapshot to the written file.
 
 
 ## Delivery
