@@ -43,7 +43,7 @@ Updated: generated locally · Documents indexed: <n>
 10. Use the template's exact table columns. The entity `Type` is person or organization; `First seen` is an exact source path. Timeline includes only events with an exact date explicitly printed in a source, in strict ascending date order; omit undated facts from the timeline. Every open-question bullet ends with an exact source path, and none is `[VERIFY LEGACY]` unless it came from a prior record.
 11. Metadata says exactly `Updated: generated locally` and includes an integer document count. The workflow has no trusted wall clock, so never invent or copy a date.
 12. On a new record, do not emit `[VERIFY LEGACY]` at all. Sort timeline rows by their actual ISO date key, not extraction order. Entity `Type` must be exactly `Person` or `Organization`.
-13. Preserve quantities exactly: two former employees means two, not four. The DPA is dated January 2023, but its India and Philippines sub-processors were added in 2025; never merge those dates.
+13. Preserve every stated quantity exactly. Keep a document's issue date separate from dates of events described inside it; never merge unrelated dates.
 
 After writing the file, submit as your result a short attorney-facing summary of **this update only**: what is new, what conflicts appeared, and the open questions. Never submit the whole record.
 

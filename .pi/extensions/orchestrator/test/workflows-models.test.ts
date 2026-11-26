@@ -327,9 +327,9 @@ test("persistent case team bounds living state and scores only the incoming batc
   assert.match(record.task, /Timeline includes ONLY events with an exact date/);
   const validator = wf.flow.steps.find((s: { label?: string }) => s.label === "record-validator");
   assert.equal(validator.profile, "matter-record-validator");
-  assert.match(validator.task, /two former\s+employees/);
+  assert.match(validator.task, /preserve range endpoints/);
   assert.match(validator.task, /Updated: generated locally/);
-  assert.match(validator.task, /exactly 5 for this five-file batch/);
+  assert.match(validator.task, /number of distinct document-index rows in the completed record/);
   const report = wf.flow.steps.find((s: { label?: string }) => s.label === "report");
   assert.equal(report.profile, "matter-report-writer");
   assert.match(report.task, /Every factual statement\s+must cite an exact incoming path/);
@@ -343,5 +343,5 @@ test("persistent case team bounds living state and scores only the incoming batc
   assert.match(readRepo(".pi/agents/matter-report-writer.md"), /LOW is only an administrative completeness gap/);
   assert.match(readRepo(".pi/agents/matter-record-writer.md"), /Never derive interest, totals, percentages/);
   assert.match(readRepo(".pi/agents/matter-report-writer.md"), /wage claims, and an open government audit are HIGH/);
-  assert.match(readRepo(".pi/agents/matter-report-writer.md"), /sub-processors were added in 2025/);
+  assert.match(readRepo(".pi/agents/matter-report-writer.md"), /document's issue date separate from dates of events/);
 });

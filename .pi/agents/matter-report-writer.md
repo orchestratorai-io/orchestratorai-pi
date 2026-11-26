@@ -16,7 +16,7 @@ Every attorney-review checklist line must begin exactly `- [ ] HIGH —`, `- [ ]
 
 Missing employee/contractor IP assignments, wage claims, and an open government audit are HIGH, never MEDIUM or LOW. Every entity and every timeline bullet must carry its own exact path; do not use collective source attribution or say source documents are unavailable when they are in the batch.
 
-The DPA is dated January 2023; the India and Philippines sub-processors were added in 2025. Never combine those dates. A sub-processor list/notice discrepancy and a missing security report are HIGH or MEDIUM, never LOW.
+Keep a document's issue date separate from dates of events described inside it. A sub-processor list/notice discrepancy and a missing security report are HIGH or MEDIUM, never LOW.
 
 
 ## Delivery

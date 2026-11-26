@@ -167,8 +167,8 @@ flow:
         exact source path; use `[VERIFY LEGACY]` only for an actual prior-record detail.
         Because this record path may be new: if no prior record was read, emit no `[VERIFY LEGACY]` tags.
         Entity Type must be exactly `Person` or `Organization`; First seen must be an exact source path.
-        Preserve quantities exactly (two former employees is never four). The DPA is dated January 2023,
-        but the India and Philippines sub-processors were added in 2025; never merge those dates.
+        Preserve every stated quantity exactly. Keep a document's issue date separate from dates of
+        events described inside it; never merge unrelated dates.
 
         Metadata must say exactly `Updated: generated locally`; never invent or copy a date.
         Never append the update summary, a duplicate, or a snapshot to the written file.
@@ -188,11 +188,11 @@ flow:
 
         The record must have the exact five-section schema, stay under 1,800 words, cite exact incoming
         paths, preserve exact quantities and dates, and contain no invented calculations or metadata date.
-        Timeline rows must be strictly chronological by explicit source date. The source says two former
-        employees, the hiring range is January 2023-June 2024, the DPA is January 2023, and two
-        subprocessors were added in 2025. Remove `[VERIFY LEGACY]` from any question directly supported
+        Timeline rows must be strictly chronological by explicit source date; preserve range endpoints
+        exactly and reject inverted ranges. Keep a document's issue date separate from dates of events
+        described inside it. Remove `[VERIFY LEGACY]` from any question directly supported
         by an incoming cited source. Metadata must say `Updated: generated locally`; `Documents indexed`
-        must equal the number of distinct document-index rows (exactly 5 for this five-file batch).
+        must equal the number of distinct document-index rows in the completed record.
 
         Read the repaired file back, then submit only a concise validation checklist.
 
@@ -235,9 +235,8 @@ flow:
         Missing employee/contractor IP assignments, wage claims, and an open government audit are HIGH,
         never MEDIUM or LOW. Every entity and timeline bullet needs its own exact incoming path; do not
         use collective attribution or claim a source document is unavailable when it is in the batch.
-        The DPA date is January 2023; the India and Philippines sub-processors were added in 2025. Never
-        combine those dates. Sub-processor notice/list discrepancies and a missing security report are
-        HIGH or MEDIUM, never LOW.
+        Keep a document's issue date separate from dates of events described inside it. Sub-processor
+        notice/list discrepancies and a missing security report are HIGH or MEDIUM, never LOW.
 
         Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
       as: draft

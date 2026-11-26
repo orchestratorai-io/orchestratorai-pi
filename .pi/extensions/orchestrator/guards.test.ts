@@ -233,9 +233,10 @@ test("every catalog workflow declares valid guards, and fill() resolves params",
     assert.ok(block, `${f} has an orchestrator-guards block`);
     const spec = validateSpec(YAML.parse(block!));
     assert.ok(spec.checks.some((c) => c.guard === "severity"), `${f} re-grades its checklist`);
-    // The flow must call the guard, or explicitly defer to the same local scorecard when the
-    // delegated child cannot load report_guard (Persistent Case Team's verified Pi limitation).
-    assert.ok(text.includes("report_guard") || text.includes("Pending local scorecard"), `${f} runs or defers to the local scorecard`);
+    // Persistent Case Team alone defers because its delegated child cannot load report_guard;
+    // every other catalog workflow must invoke the tool in-flow.
+    const locallyScoredPersistentTeam = f === "persistent-case-team.yaml" && text.includes("Pending local scorecard");
+    assert.ok(text.includes("report_guard") || locallyScoredPersistentTeam, `${f} runs or explicitly defers to the local scorecard`);
     assert.ok(new RegExp(`label: ${spec.step}\\b`).test(text), `${f} has a step labelled ${spec.step}`);
     n++;
   }
