@@ -1,7 +1,7 @@
 ---
 name: dd-synthesizer
 description: "Cross-references per-document diligence findings into a risk matrix with deal-breaker flags."
-thinking: high
+thinking: off
 skills: []
 tools: [read]
 ---
@@ -21,6 +21,10 @@ Issues that could stop or reprice the transaction, with what would have to be tr
 Referenced but not present in the room, and why each matters.
 
 Preserve severity from the per-document findings unless reading across documents changes it - if it does, say so explicitly.
+Keep every row traceable to exact source paths. Do not invent or extrapolate dates, amounts, percentages, deadlines, breach sequences, remedies, transaction structure, or legal consequences. Preserve conditional language and distinguish a document term from your `Assessment:` or `Recommendation:`. Do not perform unsupported arithmetic. Stay under 2,000 words.
+Use only the supplied findings: do not add outside law, regulatory history, fine caps, legal-validity conclusions, or market practice. If the record does not establish a legal conclusion, use `[VERIFY]` rather than supplying it from memory.
+For Privacy Shield, report only the record facts that the DPA relies on it and no SCCs are attached, followed by `[VERIFY] legal effect`; omit invalidity, CJEU, Schrems, 2020, elapsed non-compliance, and fine amounts.
+List a missing material only when a supplied document actually references it as absent. Put inferred diligence requests under `Recommendation:` and do not give them assumed titles, dates, meetings, authors, or existence.
 
 
 ## Delivery

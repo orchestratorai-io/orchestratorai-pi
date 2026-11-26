@@ -255,3 +255,28 @@ test("discovery review withholds uncertain privilege and skips app gates in term
   assert.match(writer, /potentially-privileged/);
   assert.match(writer, /A skipped gate never clears a document/);
 });
+
+test("due diligence stays source-bound and skips app gates in terminal runs", () => {
+  const wf = YAML.parse(readRepo(".pi/workflows/due-diligence.yaml"));
+  for (const label of ["gate-1-analysis", "gate-2-synthesis", "quality-guards"]) {
+    const step = wf.flow.steps.find((s: { label?: string }) => s.label === label);
+    assert.equal(step.kind, "switch", label);
+    assert.equal(step.on, "{params.run_id}", label);
+  }
+  const synthesis = wf.flow.steps.find((s: { label?: string }) => s.label === "synthesis");
+  const analyse = wf.flow.steps.find((s: { label?: string }) => s.label === "analyse");
+  assert.match(analyse.body.task, /CLOSED RECORD: stay under 600 words/);
+  assert.match(analyse.body.task, /Never mention invalidity, CJEU, Schrems, 2020/);
+  assert.match(synthesis.task, /under 2,000 words/);
+  assert.match(synthesis.task, /prefix\s+every inference with `Assessment:`/);
+  const report = wf.flow.steps.find((s: { label?: string }) => s.label === "report");
+  assert.match(report.task, /A skipped gate records no correction/);
+  assert.match(report.task, /Every checklist line MUST begin exactly/);
+  assert.match(readRepo(".pi/agents/dd-synthesizer.md"), /Do not invent or extrapolate dates, amounts/);
+  assert.match(readRepo(".pi/agents/dd-report-writer.md"), /never turn a possible remedy or future event into a certainty/);
+  assert.match(readRepo(".pi/agents/dd-report-writer.md"), /Do not add outside law, regulatory dates, fine caps/);
+  assert.match(readRepo(".pi/agents/dd-report-writer.md"), /delete any matrix language about invalidity, CJEU, Schrems, 2020/);
+  assert.match(readRepo(".pi/agents/dd-report-writer.md"), /Every inferred diligence request must begin `Recommendation:`/);
+  assert.match(readRepo(".pi/agents/dd-report-writer.md"), /never list gate status, skipped decisions/);
+  assert.match(readRepo(".pi/agents/dd-report-writer.md"), /sub-processors HIGH or MEDIUM, never LOW/);
+});
