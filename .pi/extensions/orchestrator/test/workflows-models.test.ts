@@ -238,3 +238,20 @@ test("cross-exam simulation keeps terminal turns deterministic and coaching non-
   }
   assert.match(readRepo(".pi/agents/xexam-debriefer.md"), /Never script testimony/);
 });
+
+test("discovery review withholds uncertain privilege and skips app gates in terminal runs", () => {
+  const wf = YAML.parse(readRepo(".pi/workflows/discovery-review.yaml"));
+  for (const label of ["gate-1-privilege", "gate-2-relevance", "gate-3-hot-docs", "gate-4-qa-sample", "quality-guards"]) {
+    const step = wf.flow.steps.find((s: { label?: string }) => s.label === label);
+    assert.equal(step.kind, "switch", label);
+    assert.equal(step.on, "{params.run_id}", label);
+  }
+  const inventory = wf.flow.steps.find((s: { label?: string }) => s.label === "inventory");
+  assert.match(inventory.task, /Exclude README files/);
+  const report = wf.flow.steps.find((s: { label?: string }) => s.label === "report");
+  assert.match(report.task, /A skipped gate clears nothing/);
+  assert.match(report.task, /Every checklist line MUST begin exactly/);
+  const writer = readRepo(".pi/agents/discovery-production-writer.md");
+  assert.match(writer, /potentially-privileged/);
+  assert.match(writer, /A skipped gate never clears a document/);
+});
