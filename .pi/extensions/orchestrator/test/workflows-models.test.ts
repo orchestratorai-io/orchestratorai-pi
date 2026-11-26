@@ -214,3 +214,27 @@ test("adversarial-brief keeps debate analysis source-bound and terminal runs det
   const fortifierStep = wf.flow.steps.find((s: { label?: string }) => s.label === "fortifier");
   assert.match(fortifierStep.task, /DECISION is skipped, apply no recommendations/);
 });
+
+test("cross-exam simulation keeps terminal turns deterministic and coaching non-scripted", () => {
+  const wf = YAML.parse(readRepo(".pi/workflows/cross-exam-simulation.yaml"));
+  assert.match(wf.params.find((p: { name: string }) => p.name === "case_facts").default, /Harbor Peak alleges/);
+  const loop = wf.flow.steps.find((s: { label?: string }) => s.label === "examination");
+  const answer = loop.body.steps.find((s: { label?: string }) => s.label === "witness-answer");
+  assert.equal(answer.kind, "switch");
+  assert.equal(answer.on, "{params.run_id}");
+  assert.match(answer.cases[0].then.value, /need to review the underlying records/);
+  const guard = wf.flow.steps.find((s: { label?: string }) => s.label === "quality-guards");
+  assert.equal(guard.kind, "switch");
+  const debrief = wf.flow.steps.find((s: { label?: string }) => s.label === "debrief");
+  assert.match(debrief.task, /Every checklist line MUST begin exactly/);
+  assert.match(debrief.task, /must not script testimony/);
+  assert.match(debrief.task, /exactly 3-5 separate Markdown bullets/);
+  assert.match(debrief.task, /Prefix every inference with `Assessment:`/);
+  assert.match(debrief.task, /Analyze only the transcript and scores/);
+  assert.match(debrief.task, /never examination tactics or question scripts/);
+  for (const name of ["xexam-strategist", "xexam-question-generator", "xexam-answer-scorer", "xexam-debriefer"]) {
+    const profile = readRepo(`.pi/agents/${name}.md`);
+    assert.match(profile, /thinking: off/);
+  }
+  assert.match(readRepo(".pi/agents/xexam-debriefer.md"), /Never script testimony/);
+});
