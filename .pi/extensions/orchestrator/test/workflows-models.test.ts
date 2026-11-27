@@ -14,9 +14,22 @@ import { fileURLToPath } from "node:url";
 import YAML from "yaml";
 import { RunStore } from "../store.ts";
 import { Journal, buildResumeFlow, type AgentsApi } from "../journal.ts";
+import { ollamaThinkingPayload } from "../ollama-thinking.ts";
 
 const REPO = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..");
 const readRepo = (rel: string) => fs.readFileSync(path.join(REPO, rel), "utf8");
+
+test("Ollama Qwen requests explicitly honor Pi's disabled thinking", () => {
+  const payload = { messages: [], stream: true };
+  const qwen = { provider: "ollama", api: "openai-completions", id: "qwen3.6:35b-mlx" };
+  assert.deepEqual(ollamaThinkingPayload(payload, qwen, "off"), { ...payload, reasoning_effort: "none" });
+  assert.deepEqual(ollamaThinkingPayload(payload, { ...qwen, id: "qwen3.5:9b" }, "off"),
+    { ...payload, reasoning_effort: "none" });
+  assert.equal(ollamaThinkingPayload(payload, qwen, "low"), undefined);
+  assert.equal(ollamaThinkingPayload(payload, { ...qwen, provider: "other" }, "off"), undefined);
+  assert.equal(ollamaThinkingPayload(payload, { ...qwen, api: "other" }, "off"), undefined);
+  assert.equal(ollamaThinkingPayload(payload, { ...qwen, id: "gemma4:e4b" }, "off"), undefined);
+});
 
 /** How a saved single-agent workflow such as kb-query is stored once pi-agents expands it. */
 const KB_FLOW = {
@@ -219,19 +232,33 @@ test("cross-exam simulation keeps terminal turns deterministic and coaching non-
   const wf = YAML.parse(readRepo(".pi/workflows/cross-exam-simulation.yaml"));
   assert.match(wf.params.find((p: { name: string }) => p.name === "case_facts").default, /Harbor Peak alleges/);
   const loop = wf.flow.steps.find((s: { label?: string }) => s.label === "examination");
+  assert.equal(loop.kind, "while");
+  assert.equal(loop.max, 5);
+  const scorer = loop.body.steps.find((s: { label?: string }) => s.label === "scorer");
+  assert.equal(scorer.json.properties.transcript, undefined, "the model only scores the current turn");
+  const accumulated = loop.body.steps.at(-1);
+  assert.equal(accumulated.kind, "value");
+  assert.match(accumulated.value.transcript, /\{current\.transcript\}[\s\S]*\{q\.question\}[\s\S]*\{answer\}/);
   const answer = loop.body.steps.find((s: { label?: string }) => s.label === "witness-answer");
   assert.equal(answer.kind, "switch");
   assert.equal(answer.on, "{params.run_id}");
   assert.match(answer.cases[0].then.value, /need to review the underlying records/);
   const guard = wf.flow.steps.find((s: { label?: string }) => s.label === "quality-guards");
   assert.equal(guard.kind, "switch");
-  const debrief = wf.flow.steps.find((s: { label?: string }) => s.label === "debrief");
+  const assembly = wf.flow.steps.find((s: { label?: string }) => s.label === "debrief");
+  assert.equal(assembly.kind, "value");
+  assert.match(assembly.value, /## Transcript\n\{exam\.transcript\}/);
+  const debrief = wf.flow.steps.find((s: { label?: string }) => s.label === "debrief-analysis");
+  assert.doesNotMatch(debrief.task, /\{strategy\}/);
   assert.match(debrief.task, /Every checklist line MUST begin exactly/);
   assert.match(debrief.task, /must not script testimony/);
-  assert.match(debrief.task, /exactly 3-5 separate Markdown bullets/);
+  assert.equal(debrief.json.properties.coaching.minItems, 3);
+  assert.equal(debrief.json.properties.coaching.maxItems, 3);
+  assert.match(assembly.value, /## Coaching recommendations\n- Turn \{analysis\.coaching\.0\.turn\}/);
   assert.match(debrief.task, /Prefix every inference with `Assessment:`/);
   assert.match(debrief.task, /Analyze only the transcript and scores/);
-  assert.match(debrief.task, /never examination tactics or question scripts/);
+  assert.match(debrief.task, /tactic for counsel/);
+  assert.match(debrief.task, /same fixed terminal response/);
   for (const name of ["xexam-strategist", "xexam-question-generator", "xexam-answer-scorer", "xexam-debriefer"]) {
     const profile = readRepo(`.pi/agents/${name}.md`);
     assert.match(profile, /thinking: off/);

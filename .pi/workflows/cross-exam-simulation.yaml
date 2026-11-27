@@ -8,7 +8,7 @@ params:
   - { name: knowledge_dir, default: "matters", description: "Folder searched for prior statements and documents" }
   - { name: run_id, default: "", description: "OrchestratorAI run id (set by the app; leave empty from the TUI)" }
 doc: |-
-  Composition: strategist -> loop(max 5) { question -> attorney gate (you answer as the witness) ->
+  Composition: strategist -> while(max 5) { question -> attorney gate (you answer as the witness) ->
   scorer } until the answer says stop -> debriefer.
   Ported from orchestratorai-local `legal/workflows/cross-exam-simulation`. The interactive turn loop uses
   the same `attorney_review` gate as every other HITL point: the question appears in the console and your
@@ -48,13 +48,34 @@ flow:
         Witness: {params.witness}
         Case facts: {params.case_facts}
         Focus area: {params.focus}
-        Prior statements and documents to search with find/grep/read (may be empty): {params.knowledge_dir}
+        Prior statements and documents to search (may be empty): {params.knowledge_dir}
+        Make one grep call inside that folder using the witness name and central issue as alternatives,
+        with at most 8 matches and one line of context. After that lookup, submit the strategy.
+        Use up to three confrontations whose exact text and source path appear in those results.
+        A generated matter summary is background. Use a quotation or prior statement only when the
+        results contain the actual primary source. With no primary-source match, leave confrontations empty.
+        Return a compact JSON strategy with topics, confrontations (with exact source paths), and vulnerabilities.
+        Include only the strongest relevant items. An empty confrontations string is valid.
 
         Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+      json:
+        type: object
+        required: [topics, confrontations, vulnerabilities]
+        properties:
+          topics: { type: string, maxLength: 1000 }
+          confrontations: { type: string, maxLength: 1200 }
+          vulnerabilities: { type: string, maxLength: 600 }
+        additionalProperties: false
       as: strategy
 
-    - kind: loop
+    - kind: value
+      value: { stop: false, transcript: "" }
+      as: initial
+
+    - kind: while
       label: examination
+      on: "{initial}"
+      condition: { eq: [stop, false] }
       max: 5
       body:
         kind: sequence
@@ -71,19 +92,24 @@ flow:
               {strategy}
 
               TRANSCRIPT SO FAR (empty on the first question):
-              {last}
+              {current.transcript}
 
-              Return JSON with question (the exact question text), topic, and move
-              (follow-up | new-topic | confront-document | impeach).
+              Return JSON with question (one short interrogative sentence), topic (3-6 words), and
+              move (follow-up | new-topic | confront-document | impeach).
+              Treat allegations and earlier questions as prompts only. The only testimony in this
+              exercise is the witness's COMMENT. Say "you testified" or "you admitted" only if an
+              earlier witness COMMENT actually contains the stated testimony or admission.
+              If you already asked about a document or event and the witness did not recall,
+              move to a distinct topic or ask a new, narrowly focused follow-up.
 
               Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
             json:
               type: object
               required: [question, topic, move]
               properties:
-                question: { type: string, minLength: 1 }
-                topic: { type: string }
-                move: { type: string }
+                question: { type: string, minLength: 1, maxLength: 450 }
+                topic: { type: string, maxLength: 160 }
+                move: { enum: [follow-up, new-topic, confront-document, impeach] }
               additionalProperties: false
             as: q
 
@@ -126,61 +152,132 @@ flow:
               {answer}
 
               TRANSCRIPT SO FAR:
-              {last}
+              {current.transcript}
 
               Return JSON with:
               - evasion, consistency, damage: integers 0-10
-              - coachingNote: one sentence
+              - coachingNote: choose the listed truthful-answer practice most relevant to the actual COMMENT
               - stop: true when the answer is empty, says "end simulation", or the witness plainly has
-                nothing further to give; otherwise false
-              - transcript: the TRANSCRIPT SO FAR, unchanged, with this turn appended as Markdown:
-                "### Turn N - <topic> (<move>)", the question, the answer, the three scores, and the note.
+                nothing further to give; otherwise false. An answer of no recall alone is not a stop signal.
+
+              All scores measure risk (higher is worse). Lack of recall alone is neither a contradiction
+              nor an admission. Score damage only for an actual harmful admission in the answer, and
+              consistency only for contradictions to supplied statements. Never infer privilege,
+              dishonesty, motive, or intent from a limited answer.
 
               Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
             json:
               type: object
-              required: [evasion, consistency, damage, coachingNote, stop, transcript]
+              required: [evasion, consistency, damage, coachingNote, stop]
               properties:
-                evasion: { type: number }
-                consistency: { type: number }
-                damage: { type: number }
-                coachingNote: { type: string }
+                evasion: { type: integer, minimum: 0, maximum: 10 }
+                consistency: { type: integer, minimum: 0, maximum: 10 }
+                damage: { type: integer, minimum: 0, maximum: 10 }
+                coachingNote:
+                  enum: &coaching-practices
+                    - Pause to understand exactly what the question asks.
+                    - Ask for clarification if the question is unclear or compound.
+                    - Give a direct answer based on your actual recollection.
+                    - Distinguish what you recall from what you would need to verify.
+                    - State any limits of your knowledge and avoid speculation.
                 stop: { type: boolean }
-                transcript: { type: string, minLength: 1 }
               additionalProperties: false
-      until: { eq: [stop, true] }
+            as: score
+
+          - kind: value
+            value:
+              stop: "{score.stop}"
+              transcript: |-
+                {current.transcript}
+
+                ### Turn index {iteration} - {q.topic} ({q.move})
+                **Question:** {q.question}
+
+                **Witness response:**
+                {answer}
+
+                **Scores:** Evasion {score.evasion}/10 · Consistency {score.consistency}/10 · Damage {score.damage}/10
+                **Coaching note:** {score.coachingNote}
+
       as: exam
 
     - kind: agent
       profile: xexam-debriefer
-      label: debrief
+      label: debrief-analysis
+      thinking: low
       task: |-
         Write the cross-examination debrief for {params.witness}.
 
-        The first line must be exactly:
-        # Cross-exam simulation - [witness name]
-        Then: ## Executive summary, ## Attorney review focus, ## Weakest moments, ## Behavioural patterns,
-        ## Coaching recommendations, ## Transcript, ## Limitations.
+        Return a JSON object with executiveSummary, reviewFocus, weakestMoments, patterns,
+        coaching, and limitations. Refer to the zero-based turn indices only. Focus on actual
+        questions, witness responses and scores. Prefix every inference with `Assessment:`.
+        Do not repeat underlying allegations, exhibits, prior statements or case metadata.
+        A DECISION: skipped turn uses the same fixed terminal response. Its repetition does
+        not support a finding about the witness's demeanor, preparation, or intent.
 
-        Under ## Attorney review focus list unchecked tasks `- [ ] SEVERITY — issue; action`, one per weak
-        moment or pattern that needs work with the witness. Map damage 8-10 to HIGH, 5-7 to MEDIUM, below 5
-        to LOW. Prefer 3-8 items.
-        Reproduce the transcript verbatim under ## Transcript.
-        Every checklist line MUST begin exactly with `- [ ] HIGH —`, `- [ ] MEDIUM —`, or `- [ ] LOW —`.
-        Coaching must improve truthful answer process and must not script testimony, admissions, denials, or explanations.
-        Under ## Coaching recommendations write exactly 3-5 separate Markdown bullets, one recommendation per bullet.
-        Analyze only the transcript and scores. Do not restate the strategy, case record, alleged evidence chain, exhibits,
-        underlying events, or case metadata. Prefix every inference with `Assessment:` and never convert an allegation or
-        strategy into a categorical finding that the witness committed misconduct. Recommendations must coach the witness's
-        truthful answer process and demeanor, never examination tactics or question scripts for counsel.
+        In reviewFocus, write 3-8 unchecked tasks. Every checklist line MUST begin exactly
+        `- [ ] HIGH —`, `- [ ] MEDIUM —`, or `- [ ] LOW —`. Map damage of 8-10 to HIGH,
+        5-7 to MEDIUM, and below 5 to LOW. Ground each issue in an actual turn and use
+        a truthful-answer practice as its action.
+        Choose exactly three distinct truthful-answer practices for coaching, with the turn
+        index that illustrates each. Coaching must not script testimony or advise an admission,
+        denial, different recollection, or tactic for counsel.
 
-        STRATEGY:
-        {strategy}
-
-        TRANSCRIPT WITH SCORES:
+        Analyze only the transcript and scores:
         {exam.transcript}
 
         Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+      json:
+        type: object
+        required: [executiveSummary, reviewFocus, weakestMoments, patterns, coaching, limitations]
+        properties:
+          executiveSummary: { type: string, maxLength: 1000 }
+          reviewFocus: { type: string, maxLength: 1800 }
+          weakestMoments: { type: string, maxLength: 1400 }
+          patterns: { type: string, maxLength: 1000 }
+          limitations: { type: string, maxLength: 700 }
+          coaching:
+            type: array
+            minItems: 3
+            maxItems: 3
+            items:
+              type: object
+              required: [turn, practice]
+              properties:
+                turn: { type: integer, minimum: 0, maximum: 4 }
+                practice:
+                  enum: *coaching-practices
+              additionalProperties: false
+        additionalProperties: false
+      as: analysis
+
+    - kind: value
+      label: debrief
+      value: |-
+        # Cross-exam simulation - {params.witness}
+
+        ## Executive summary
+        {analysis.executiveSummary}
+
+        ## Attorney review focus
+        {analysis.reviewFocus}
+
+        ## Weakest moments
+        {analysis.weakestMoments}
+
+        ## Behavioural patterns
+        {analysis.patterns}
+
+        ## Coaching recommendations
+        - Turn {analysis.coaching.0.turn}: {analysis.coaching.0.practice}
+        - Turn {analysis.coaching.1.turn}: {analysis.coaching.1.practice}
+        - Turn {analysis.coaching.2.turn}: {analysis.coaching.2.practice}
+
+        ## Transcript
+        {exam.transcript}
+
+        ## Limitations
+        {analysis.limitations}
       as: draft
 
     # Quality guards (see the orchestrator-guards block in doc): Clef checks the finished report,
