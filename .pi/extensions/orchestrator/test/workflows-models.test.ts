@@ -292,9 +292,10 @@ test("due diligence stays source-bound and skips app gates in terminal runs", ()
   }
   const synthesis = wf.flow.steps.find((s: { label?: string }) => s.label === "synthesis");
   const analyse = wf.flow.steps.find((s: { label?: string }) => s.label === "analyse");
-  assert.match(analyse.body.task, /CLOSED RECORD: stay under 600 words/);
+  assert.equal(analyse.concurrency, 1);
+  assert.match(analyse.body.task, /CLOSED RECORD: aim for 350 words/);
   assert.match(analyse.body.task, /Never mention invalidity, CJEU, Schrems, 2020/);
-  assert.match(synthesis.task, /under 2,000 words/);
+  assert.match(synthesis.task, /under 1,500 words/);
   assert.match(synthesis.task, /prefix\s+every inference with `Assessment:`/);
   const report = wf.flow.steps.find((s: { label?: string }) => s.label === "report");
   assert.match(report.task, /A skipped gate records no correction/);
