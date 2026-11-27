@@ -314,10 +314,16 @@ test("trial simulator bounds scenario context and labels simulated conclusions",
   const simulate = wf.flow.steps.find((s: { label?: string }) => s.label === "simulate");
   assert.equal(simulate.concurrency, 1);
   const argument = simulate.body.steps.find((s: { label?: string }) => s.label === "argument");
+  assert.equal(argument.concurrency, 1);
+  assert.deepEqual(argument.branches.plaintiff.json, argument.branches.defense.json);
+  assert.deepEqual(argument.branches.plaintiff.json.required, ["theory", "arguments"]);
   for (const branch of Object.values(argument.branches) as Array<{ task: string }>) {
-    assert.match(branch.task, /Stay under 600 words/);
-    assert.match(branch.task, /Prefix jury inferences with `Argument:`/);
+    assert.match(branch.task, /Aim for 350 words/);
+    assert.match(branch.task, /Prefix jury inferences with\s+`Argument:`/);
   }
+  const jury = simulate.body.steps.find((s: { label?: string }) => s.label === "jury");
+  assert.match(jury.task, /\{space\.damagesEvidence\}/);
+  assert.deepEqual(jury.json.properties.verdict.enum, ["plaintiff", "defense", "mixed"]);
   const statistics = wf.flow.steps.find((s: { label?: string }) => s.label === "statistics");
   assert.match(statistics.task, /fewer\s+than 10 outcomes report min\/max rather than interpolated percentiles/);
   assert.match(statistics.task, /Label every sensitivity\s+conclusion `Simulation association:`/);

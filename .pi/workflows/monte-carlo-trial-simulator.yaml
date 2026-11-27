@@ -7,7 +7,7 @@ params:
   - { name: context, default: "Estimate the outcome distribution and a settlement band for case evaluation.", description: Objective }
   - { name: run_id, default: "", description: "OrchestratorAI run id (set by the app; leave empty from the TUI)" }
 doc: |-
-  Composition: parameter designer -> map(simulations) { plaintiff counsel and defence counsel in parallel
+  Composition: parameter designer -> map(simulations) { plaintiff and defence counsel, one at a time
   -> jury verdict } -> statistician -> report.
   Ported from orchestratorai-local `legal/workflows/monte-carlo-trial-simulator`. Local runs up to 200
   simulations; on local hardware each mini-trial is three agent calls, so the default here is 4 and the
@@ -42,16 +42,21 @@ flow:
       profile: trial-parameter-designer
       label: parameters
       task: |-
-        Read the case record at {params.target} completely, then design exactly {params.simulations}
+        Required source: {params.target}
+        Read the supplied case record completely, using the read tool on {params.target} only if it
+        is not supplied inline. Design exactly {params.simulations}
         stratified parameter sets for simulated trials.
         Objective: {params.context}
 
         Each entry needs: id (SIM-n), jury (composition and leanings), judge (profile and evidentiary
         posture), evidence (which contested items are admitted and which excluded, by name from the
         record), and witnesses (credibility modifiers by name).
+        Separately extract `damagesEvidence`: each distinct dollar amount stated as a damages theory,
+        with its exact quoted wording and theory. Do not include unrelated dollar figures. Use an empty
+        array if the record has no quantified damages theory. This shared evidence is passed to every jury.
 
-        CLOSED RECORD: use only evidence and witnesses named in the record. Each field must stay under
-        80 words. Use generic judge and jury descriptions; never invent names, vote splits, demographics,
+        CLOSED RECORD: use only evidence and witnesses named in the record. Use at most 360
+        characters per scenario field. Use generic judge and jury descriptions; never invent names, vote splits, demographics,
         instructions, venue facts, or prior rulings. All scenario details are assumptions, not facts or law.
         Preserve asserted, contested, and not-yet-ruled admissibility status exactly; an assumed scenario
         outcome may not claim the real court resolved the issue or invent a legal reason for it.
@@ -59,8 +64,18 @@ flow:
         Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
       json:
         type: object
-        required: [simulations]
+        required: [simulations, damagesEvidence]
         properties:
+          damagesEvidence:
+            type: array
+            items:
+              type: object
+              required: [amount, theory, quotation]
+              properties:
+                amount: { type: number, exclusiveMinimum: 0 }
+                theory: { type: string, minLength: 1, maxLength: 160 }
+                quotation: { type: string, minLength: 1, maxLength: 320 }
+              additionalProperties: false
           simulations:
             type: array
             minItems: 1
@@ -69,10 +84,10 @@ flow:
               required: [id, jury, judge, evidence, witnesses]
               properties:
                 id: { type: string }
-                jury: { type: string }
-                judge: { type: string }
-                evidence: { type: string }
-                witnesses: { type: string }
+                jury: { type: string, maxLength: 360 }
+                judge: { type: string, maxLength: 360 }
+                evidence: { type: string, maxLength: 360 }
+                witnesses: { type: string, maxLength: 360 }
               additionalProperties: false
         additionalProperties: false
       as: space
@@ -86,40 +101,68 @@ flow:
         steps:
           - kind: parallel
             label: argument
-            onError: collect
+            concurrency: 1
             branches:
               plaintiff:
                 kind: agent
                 profile: trial-advocate
                 label: plaintiff-counsel
+                thinking: low
                 task: |-
+                  Required source: {params.target}
                   You are PLAINTIFF's counsel in simulation {item.id}.
-                  Case record: {params.target} (read it).
+                  Use the supplied case record. Call read on {params.target} only if it is not supplied inline.
                   Jury: {item.jury}
                   Judge: {item.judge}
                   Evidence admitted/excluded in this simulation: {item.evidence}
                   Witness credibility in this simulation: {item.witnesses}
 
-                  Stay under 600 words. Use only the record and this parameter set. Do not add law,
-                  dates, amounts, procedural events, or rulings. Prefix jury inferences with `Argument:`.
+                  Use a short argument for each material disputed element based on admitted evidence
+                  and the supplied credibility assumptions. Aim for 350 words without dropping a claim
+                  or defense. Do not repeat the case record or parameter set. Prefix jury inferences with
+                  `Argument:`. Do not add law, dates, amounts, procedural events, or rulings.
+                  Return JSON with a short theory and arguments with issue, evidence, and argument fields.
 
                   Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+                json: &advocate-result
+                  type: object
+                  required: [theory, arguments]
+                  properties:
+                    theory: { type: string, maxLength: 320 }
+                    arguments:
+                      type: array
+                      minItems: 1
+                      items:
+                        type: object
+                        required: [issue, evidence, argument]
+                        properties:
+                          issue: { type: string, maxLength: 140 }
+                          evidence: { type: string, maxLength: 320 }
+                          argument: { type: string, maxLength: 420 }
+                        additionalProperties: false
+                  additionalProperties: false
               defense:
                 kind: agent
                 profile: trial-advocate
                 label: defense-counsel
+                thinking: low
                 task: |-
+                  Required source: {params.target}
                   You are DEFENCE counsel in simulation {item.id}.
-                  Case record: {params.target} (read it).
+                  Use the supplied case record. Call read on {params.target} only if it is not supplied inline.
                   Jury: {item.jury}
                   Judge: {item.judge}
                   Evidence admitted/excluded in this simulation: {item.evidence}
                   Witness credibility in this simulation: {item.witnesses}
 
-                  Stay under 600 words. Use only the record and this parameter set. Do not add law,
-                  dates, amounts, procedural events, or rulings. Prefix jury inferences with `Argument:`.
+                  Use a short argument for each material disputed element based on admitted evidence
+                  and the supplied credibility assumptions. Aim for 350 words without dropping a claim
+                  or defense. Do not repeat the case record or parameter set. Prefix jury inferences with
+                  `Argument:`. Do not add law, dates, amounts, procedural events, or rulings.
+                  Return JSON with a short theory and arguments with issue, evidence, and argument fields.
 
                   Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+                json: *advocate-result
             as: args
           - kind: agent
             profile: trial-jury
@@ -137,9 +180,12 @@ flow:
               DEFENCE CASE:
               {args.defense}
 
-              Stay under 250 words. Use only these inputs. A defense verdict MUST use damages 0; a
-              plaintiff or mixed verdict MUST copy one exact nonzero dollar figure printed in the
-              record and name its damages theory. Do not calculate a midpoint, compromise, percentage,
+              DAMAGES EVIDENCE FROM {params.target}:
+              {space.damagesEvidence}
+
+              Keep the reasoning to one sentence and give 2-4 short decision factors. Use only these inputs.
+              A defense verdict MUST use damages 0; a plaintiff or mixed verdict MUST use one exact
+              nonzero amount from DAMAGES EVIDENCE and name its theory. Do not calculate a midpoint, compromise, percentage,
               multiplier, or new figure. Never invent a judge name, vote count, jury instruction,
               damages cap, or quote. Begin reasoning with `In this simulation,` and do not state actual
               law, rulings, or facts beyond the record.
@@ -153,10 +199,10 @@ flow:
               required: [simulationId, verdict, damages, keyFactors, reasoning]
               properties:
                 simulationId: { type: string }
-                verdict: { type: string }
-                damages: { type: number }
-                keyFactors: { type: array, items: { type: string } }
-                reasoning: { type: string }
+                verdict: { enum: [plaintiff, defense, mixed] }
+                damages: { type: number, minimum: 0 }
+                keyFactors: { type: array, minItems: 2, maxItems: 4, items: { type: string, maxLength: 160 } }
+                reasoning: { type: string, minLength: 1, maxLength: 450 }
               additionalProperties: false
       as: verdicts
 
@@ -173,7 +219,8 @@ flow:
         VERDICTS:
         {verdicts}
 
-        Stay under 1,200 words. Show arithmetic for rates, mean, median, and expected value. With fewer
+        Use compact tables or formulas. Refer to scenarios by ID without retelling the arguments.
+        Stay under 800 words. Show arithmetic for rates, mean, median, and expected value. With fewer
         than 10 outcomes report min/max rather than interpolated percentiles. Label every sensitivity
         conclusion `Simulation association:` and do not claim causation, probability, prediction, or
         statistical significance.
@@ -194,7 +241,7 @@ flow:
         ## Damages distribution, ## Settlement range, ## Sensitivity analysis, ## Strategy recommendations,
         ## Simulation log, ## Limitations. Repeat the disclaimer at the end.
 
-        Under ## Attorney review focus list unchecked tasks `- [ ] SEVERITY - issue; action`: any
+        Under ## Attorney review focus list unchecked tasks `- [ ] SEVERITY — issue; action`: any
         assumption the distribution is sensitive to is HIGH, small-sample caveats are MEDIUM.
         Prefer 4-8 items.
 
