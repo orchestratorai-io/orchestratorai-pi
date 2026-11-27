@@ -32,6 +32,13 @@ doc: |-
     focusSubtitle: Privilege calls are the ones that cannot be wrong. Work those first; the log is built from them.
     blurb: Confirm the coding, the production set, and the privilege log before anything leaves your control. Recording Approve or Request changes completes the attorney-review checkpoint.
   ```
+
+  ```orchestrator-guards
+  step: report
+  checks:
+    - { guard: privilege, record: ["{params.target}"], privilege_holders: "{params.privilege_holders}", matter: "{params.matter}" }
+    - { guard: severity }
+  ```
 flow:
   kind: sequence
   steps:
@@ -42,6 +49,7 @@ flow:
         Inventory every readable document in the folder {params.target}.
         Use ls and find to enumerate it, then read enough of each file to classify it.
         Each `path` must be the exact path a read tool can open (include the folder prefix).
+        Exclude README files, hidden files, and directory indexes from the review corpus.
 
         Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
       json:
@@ -100,65 +108,93 @@ flow:
         Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
       as: batches
 
-    - kind: agent
-      profile: attorney-gate
+    - kind: switch
       label: gate-1-privilege
-      task: |-
-        Call the attorney_review tool exactly once with:
-        - run_id: "{params.run_id}"
-        - title: "Gate 1 - privilege review (mandatory, no bulk approve)"
-        - summary: the PRIVILEGE BATCH section of the batches below, in full, preceded by these two lines:
-          "Every potentially privileged document must be reviewed individually. Approve the coding, or request changes and correct specific documents."
-          "A missed privileged document is a waiver."
-        Then submit the tool's returned text (the DECISION and COMMENT lines) verbatim as your result.
+      on: "{params.run_id}"
+      cases:
+        - when: { eq: ["", ""] }
+          then: { kind: value, value: "DECISION: skipped\nCOMMENT: Terminal run; no potentially privileged document is cleared for production." }
+      else:
+        kind: agent
+        profile: attorney-gate
+        label: gate-1-privilege-agent
+        task: |-
+          Call the attorney_review tool exactly once with:
+          - run_id: "{params.run_id}"
+          - title: "Gate 1 - privilege review (mandatory, no bulk approve)"
+          - summary: the PRIVILEGE BATCH section of the batches below, in full, preceded by these two lines:
+            "Every potentially privileged document must be reviewed individually. Approve the coding, or request changes and correct specific documents."
+            "A missed privileged document is a waiver."
+          Then submit the tool's returned text (the DECISION and COMMENT lines) verbatim as your result.
 
-        BATCHES:
-        {batches}
+          BATCHES:
+          {batches}
       as: gate_privilege
 
-    - kind: agent
-      profile: attorney-gate
+    - kind: switch
       label: gate-2-relevance
-      task: |-
-        Call the attorney_review tool exactly once with:
-        - run_id: "{params.run_id}"
-        - title: "Gate 2 - relevance review (low-confidence calls)"
-        - summary: the RELEVANCE BATCH section of the batches below, preceded by one line:
-          "Bulk approval is allowed at this gate. Approve, or request changes and name the documents to recode."
-        Then submit the tool's returned text (the DECISION and COMMENT lines) verbatim as your result.
+      on: "{params.run_id}"
+      cases:
+        - when: { eq: ["", ""] }
+          then: { kind: value, value: "DECISION: skipped\nCOMMENT: Terminal run; no relevance corrections recorded." }
+      else:
+        kind: agent
+        profile: attorney-gate
+        label: gate-2-relevance-agent
+        task: |-
+          Call the attorney_review tool exactly once with:
+          - run_id: "{params.run_id}"
+          - title: "Gate 2 - relevance review (low-confidence calls)"
+          - summary: the RELEVANCE BATCH section of the batches below, preceded by one line:
+            "Bulk approval is allowed at this gate. Approve, or request changes and name the documents to recode."
+          Then submit the tool's returned text (the DECISION and COMMENT lines) verbatim as your result.
 
-        BATCHES:
-        {batches}
+          BATCHES:
+          {batches}
       as: gate_relevance
 
-    - kind: agent
-      profile: attorney-gate
+    - kind: switch
       label: gate-3-hot-docs
-      task: |-
-        Call the attorney_review tool exactly once with:
-        - run_id: "{params.run_id}"
-        - title: "Gate 3 - hot document review"
-        - summary: the HOT DOCUMENTS BATCH section of the batches below, preceded by one line:
-          "Approve, or request changes to flag any of these for senior attorney review."
-        Then submit the tool's returned text (the DECISION and COMMENT lines) verbatim as your result.
+      on: "{params.run_id}"
+      cases:
+        - when: { eq: ["", ""] }
+          then: { kind: value, value: "DECISION: skipped\nCOMMENT: Terminal run; no hot-document corrections recorded." }
+      else:
+        kind: agent
+        profile: attorney-gate
+        label: gate-3-hot-docs-agent
+        task: |-
+          Call the attorney_review tool exactly once with:
+          - run_id: "{params.run_id}"
+          - title: "Gate 3 - hot document review"
+          - summary: the HOT DOCUMENTS BATCH section of the batches below, preceded by one line:
+            "Approve, or request changes to flag any of these for senior attorney review."
+          Then submit the tool's returned text (the DECISION and COMMENT lines) verbatim as your result.
 
-        BATCHES:
-        {batches}
+          BATCHES:
+          {batches}
       as: gate_hot
 
-    - kind: agent
-      profile: attorney-gate
+    - kind: switch
       label: gate-4-qa-sample
-      task: |-
-        Call the attorney_review tool exactly once with:
-        - run_id: "{params.run_id}"
-        - title: "Gate 4 - QA sample and calibration"
-        - summary: the QA SAMPLE section of the batches below, preceded by one line:
-          "Corrections here feed the calibration check. Approve, or request changes with the corrections."
-        Then submit the tool's returned text (the DECISION and COMMENT lines) verbatim as your result.
+      on: "{params.run_id}"
+      cases:
+        - when: { eq: ["", ""] }
+          then: { kind: value, value: "DECISION: skipped\nCOMMENT: Terminal run; no QA corrections recorded." }
+      else:
+        kind: agent
+        profile: attorney-gate
+        label: gate-4-qa-sample-agent
+        task: |-
+          Call the attorney_review tool exactly once with:
+          - run_id: "{params.run_id}"
+          - title: "Gate 4 - QA sample and calibration"
+          - summary: the QA SAMPLE section of the batches below, preceded by one line:
+            "Corrections here feed the calibration check. Approve, or request changes with the corrections."
+          Then submit the tool's returned text (the DECISION and COMMENT lines) verbatim as your result.
 
-        BATCHES:
-        {batches}
+          BATCHES:
+          {batches}
       as: gate_qa
 
     - kind: agent
@@ -172,9 +208,12 @@ flow:
         Then: ## Executive summary, ## Attorney review focus, ## Review statistics, ## Production set,
         ## Privilege log, ## Calibration, ## Gate decisions, ## Limitations.
 
-        Under ## Attorney review focus list unchecked tasks `- [ ] SEVERITY - issue; action`. Any document
+        Under ## Attorney review focus list unchecked tasks `- [ ] SEVERITY — issue; action`. Any document
         still coded potentially-privileged after gate 1 is HIGH. Prefer 4-10 items.
         Apply every correction the gate decisions recorded before computing the production set and log.
+        Every checklist line MUST begin exactly with `- [ ] HIGH —`, `- [ ] MEDIUM —`, or `- [ ] LOW —`.
+        Exclude every privileged or potentially-privileged document from production unless gate 1 explicitly
+        cleared that exact document. A skipped gate clears nothing and records no corrections.
 
         GATE DECISIONS
         Privilege: {gate_privilege}
@@ -189,4 +228,30 @@ flow:
         {coded}
 
         Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+      as: draft
+
+    # Quality guards (see the orchestrator-guards block in doc): Clef checks the finished report,
+    # and the result is appended to it, so the attorney reviews the report and its guard section together.
+    - kind: switch
+      label: quality-guards
+      on: "{params.run_id}"
+      cases:
+        - when: { eq: ["", ""] }
+          then: { kind: value, value: "## Quality guards\nTerminal run: score with `npm run guards -- --workflow=discovery-review --run=<run-id>`." }
+      else:
+        kind: agent
+        profile: guard-gate
+        label: quality-guards-agent
+        task: |-
+          Call the report_guard tool exactly once with run_id "{params.run_id}".
+          Then submit the tool's returned Markdown verbatim as your result.
+      as: guards
+
+    - kind: value
+      label: guarded-report
+      value: |-
+        {draft}
+
+        {guards}
       as: report
+display: report

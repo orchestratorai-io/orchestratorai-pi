@@ -1,7 +1,7 @@
 ---
 name: brief-judge
 description: Skeptical judge scoring each Red/Blue exchange on legal soundness, factual support, citation quality, and persuasiveness, and deciding whether the debate has converged.
-thinking: medium
+thinking: off
 skills: []
 tools: [read]
 ---

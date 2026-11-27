@@ -1,7 +1,7 @@
 /**
  * OrchestratorAI bridge for Pi.
  *
- * Four responsibilities, all deterministic (no chat model in the loop):
+ * Five responsibilities, all deterministic (no chat model in the loop):
  *
  * 1. `/orchestrator start|stop|ping <json>` — a slash command the macOS app
  *    invokes over Pi RPC. `start` launches a saved pi-agents workflow by name
@@ -23,6 +23,12 @@
  *    Studio's Ollama by default) through the vendored `./decisions` client.
  *    Every evaluation is recorded in the store. The tool keeps its historical
  *    name because workflows and stored runs reference it.
+ *
+ * 5. `report_guard` tool — runs a rubric over a finished step of the run as a
+ *    quality guard (citations in the record, checklist severity, privilege in
+ *    the production set, missed alerts, coaching). It reads the step output
+ *    from the journal and the record from disk, so no chat model copies the
+ *    text. The splitting and combining is code in ./guards.ts.
  */
 
 import * as fs from "node:fs";
@@ -33,7 +39,8 @@ import type { RunStore, RunRow } from "./store";
 import { Journal } from "./journal.ts";
 import { ExtensionRuntime } from "./runtime.ts";
 import { DecisionClient, runRubric, type Rubric } from "./decisions/index.ts";
-import { attorneyGate, consoleAttached, gateRun, SKIPPED } from "./gate.ts";
+import { guardBlock, validateSpec, runGuards, type GuardContext, type GuardSpec } from "./guards.ts";
+import { attorneyGate, consoleAttached, gateRun, sleep, SKIPPED } from "./gate.ts";
 
 const CALLER = "orchestratorai";
 const REPLY_TYPE = "orchestrator:reply";
@@ -309,6 +316,80 @@ export default function orchestrator(pi: any) {
         content: [{ type: "text", text: JSON.stringify({ decision: result.decision, reason: result.reason, answers: result.answers }, null, 2) }],
         details: { rubric: result.rubric, version: result.version, decision: result.decision },
       };
+    },
+  });
+
+  // ------------------------------------------------------ report guards
+
+  // The guard reads the step's output from the run journal and its configuration from the
+  // workflow's own ```orchestrator-guards block, so the agent that calls it passes one
+  // argument and never copies a report into a tool call (where a local model shortens or
+  // edits it). The splitting and combining is code in ./guards.ts.
+  pi.registerTool({
+    name: "report_guard",
+    label: "Quality guards",
+    description:
+      "Run this workflow's calibrated quality guards over its finished report and get back a Markdown " +
+      "'## Quality guards' section: whether every dated, numbered or quoted statement is in the record, " +
+      "whether checklist severities are right, and (per workflow) privilege, missed alerts or witness " +
+      "coaching. Each decision is pass, review or block. The tool reads the report, the record and the " +
+      "guard settings itself. Call it only when your task tells you to.",
+    parameters: Type.Object({
+      run_id: Type.String({ description: "The OrchestratorAI run id given in your task; empty if none." }),
+    }),
+    async execute(_id: string, params: { run_id: string }, signal: AbortSignal | undefined, _onUpdate: unknown, ctx: any) {
+      const db = openStore(ctx.cwd);
+      const projectDir = findProjectDir(ctx.cwd);
+      const run = (params.run_id && (db.getRun(params.run_id) ?? db.findRunByPiId(params.run_id))) || db.latestRunningRun();
+      const reply = (decision: string, markdown: string) => {
+        if (run) db.appendEvent({ runId: run.id, type: "report_guard", summary: `Quality guards → ${decision}`, detail: markdown });
+        return { content: [{ type: "text", text: markdown }], details: { decision } };
+      };
+      const fallback = (why: string) =>
+        reply("review", `## Quality guards\n\n- **Quality guards: Review.** ${why} A person must check this report.`);
+      if (!run) return fallback("No OrchestratorAI run was found, so the guards could not read the report.");
+
+      let spec: GuardSpec;
+      try {
+        const file = path.join(projectDir, ".pi", "workflows", `${run.workflow}.yaml`);
+        const block = guardBlock(fs.readFileSync(file, "utf8"));
+        if (!block) return fallback(`Workflow '${run.workflow}' declares no guards.`);
+        const YAML = (await import("yaml")).default;
+        spec = validateSpec(YAML.parse(block));
+      } catch (e) {
+        return fallback(`The guard settings could not be read (${(e as Error).message}).`);
+      }
+
+      // The parent Pi process journals the step's completion; give it a moment to land.
+      let report: string | undefined;
+      for (let i = 0; i < 20 && report === undefined; i++) {
+        report = db.latestStepOutput(run.id, spec.step);
+        if (report === undefined) await sleep(1000, signal);
+      }
+      if (report === undefined) return fallback(`The output of step '${spec.step}' was not found in the run journal.`);
+
+      let guardCtx: GuardContext;
+      try {
+        const { client, rubrics } = await decisions(ctx.cwd);
+        guardCtx = {
+          client, rubrics,
+          onItem: (rubric, item, preview) => db.recordEvaluation({
+            id: randomUUID(), runId: run.id, rubric: rubric.name, rubricVersion: rubric.version,
+            decision: item.decision, reason: item.error ? `${item.reason}: ${item.error}` : item.reason,
+            answers: item.result?.answers ?? {}, statePreview: preview.slice(0, 400), model: item.result?.model,
+            inputTokens: item.result?.usage?.input_tokens, outputTokens: item.result?.usage?.output_tokens,
+          }),
+        };
+      } catch (e) {
+        return fallback(`The decision model is not available (${(e as Error).message}).`);
+      }
+      let runParams: Record<string, unknown> = {};
+      try { runParams = JSON.parse(run.params_json) as Record<string, unknown>; } catch { /* none */ }
+      const out = await runGuards(guardCtx, spec, {
+        report, params: runParams, projectDir,
+        stepOutput: (label) => db.latestStepOutput(run.id, label),
+      });
+      return reply(out.decision, out.markdown);
     },
   });
 

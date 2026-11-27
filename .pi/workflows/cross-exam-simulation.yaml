@@ -3,7 +3,7 @@ description: Put a witness through an adaptive cross-examination. The simulator 
 trigger: when the user asks to simulate or practise a cross-examination
 params:
   - { name: witness, required: true, description: "Witness name, role, and background" }
-  - { name: case_facts, required: true, description: "Case facts and posture" }
+  - { name: case_facts, default: "Harbor Peak alleges Aspen used its data-pipeline architecture after an NDA evaluation. Aspen says its engineers relied only on residuals retained in memory.", description: "Case facts and posture" }
   - { name: focus, default: "No particular focus - follow the strategy", description: "Optional focus area" }
   - { name: knowledge_dir, default: "matters", description: "Folder searched for prior statements and documents" }
   - { name: run_id, default: "", description: "OrchestratorAI run id (set by the app; leave empty from the TUI)" }
@@ -28,6 +28,14 @@ doc: |-
     focusTitle: Coaching focus
     focusSubtitle: Work the weakest moments with the witness. Answer each question in the gate note as the witness would.
     blurb: Review the transcript, scores, and coaching before the real deposition. Recording Approve or Request changes completes the attorney-review checkpoint.
+  ```
+
+  ```orchestrator-guards
+  step: debrief
+  checks:
+    - { guard: coaching, include: [Coaching recommendations] }
+    - { guard: citations, record: ["{params.knowledge_dir}"], record_text: "{params.witness}. {params.case_facts}", record_steps: [examination], skip: [Transcript, Limitations, Quality guards] }
+    - { guard: severity }
   ```
 flow:
   kind: sequence
@@ -79,18 +87,29 @@ flow:
               additionalProperties: false
             as: q
 
-          - kind: agent
-            profile: attorney-gate
+          - kind: switch
             label: witness-answer
-            task: |-
-              Call the attorney_review tool exactly once with:
-              - run_id: "{params.run_id}"
-              - title: "Cross-examination - answer as the witness"
-              - summary: exactly these lines:
-                "**Q ({q.move}, {q.topic}):** {q.question}"
-                ""
-                "Answer as the witness would in the note below, then Approve to continue. Type \"end simulation\" to stop."
-              Then submit the tool's returned text (the DECISION and COMMENT lines) verbatim as your result.
+            on: "{params.run_id}"
+            cases:
+              - when: { eq: ["", ""] }
+                then:
+                  kind: value
+                  value: |-
+                    DECISION: skipped
+                    COMMENT: I do not recall beyond the facts provided, and I would need to review the underlying records before answering further.
+            else:
+              kind: agent
+              profile: attorney-gate
+              label: witness-answer-agent
+              task: |-
+                Call the attorney_review tool exactly once with:
+                - run_id: "{params.run_id}"
+                - title: "Cross-examination - answer as the witness"
+                - summary: exactly these lines:
+                  "**Q ({q.move}, {q.topic}):** {q.question}"
+                  ""
+                  "Answer as the witness would in the note below, then Approve to continue. Type \"end simulation\" to stop."
+                Then submit the tool's returned text (the DECISION and COMMENT lines) verbatim as your result.
             as: answer
 
           - kind: agent
@@ -143,10 +162,17 @@ flow:
         Then: ## Executive summary, ## Attorney review focus, ## Weakest moments, ## Behavioural patterns,
         ## Coaching recommendations, ## Transcript, ## Limitations.
 
-        Under ## Attorney review focus list unchecked tasks `- [ ] SEVERITY - issue; action`, one per weak
+        Under ## Attorney review focus list unchecked tasks `- [ ] SEVERITY — issue; action`, one per weak
         moment or pattern that needs work with the witness. Map damage 8-10 to HIGH, 5-7 to MEDIUM, below 5
         to LOW. Prefer 3-8 items.
         Reproduce the transcript verbatim under ## Transcript.
+        Every checklist line MUST begin exactly with `- [ ] HIGH —`, `- [ ] MEDIUM —`, or `- [ ] LOW —`.
+        Coaching must improve truthful answer process and must not script testimony, admissions, denials, or explanations.
+        Under ## Coaching recommendations write exactly 3-5 separate Markdown bullets, one recommendation per bullet.
+        Analyze only the transcript and scores. Do not restate the strategy, case record, alleged evidence chain, exhibits,
+        underlying events, or case metadata. Prefix every inference with `Assessment:` and never convert an allegation or
+        strategy into a categorical finding that the witness committed misconduct. Recommendations must coach the witness's
+        truthful answer process and demeanor, never examination tactics or question scripts for counsel.
 
         STRATEGY:
         {strategy}
@@ -155,4 +181,34 @@ flow:
         {exam.transcript}
 
         Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+      as: draft
+
+    # Quality guards (see the orchestrator-guards block in doc): Clef checks the finished report,
+    # and the result is appended to it, so the attorney reviews the report and its guard section together.
+    - kind: switch
+      label: quality-guards
+      on: "{params.run_id}"
+      cases:
+        - when: { eq: ["", ""] }
+          then:
+            kind: value
+            value: |-
+              ## Quality guards
+              Terminal run: score with `npm run guards -- --workflow=cross-exam-simulation --run=<run-id>`.
+      else:
+        kind: agent
+        profile: guard-gate
+        label: quality-guards-agent
+        task: |-
+          Call the report_guard tool exactly once with run_id "{params.run_id}".
+          Then submit the tool's returned Markdown verbatim as your result.
+      as: guards
+
+    - kind: value
+      label: guarded-report
+      value: |-
+        {draft}
+
+        {guards}
       as: report
+display: report

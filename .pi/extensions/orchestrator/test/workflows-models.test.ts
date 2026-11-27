@@ -153,3 +153,195 @@ test("16: deposition-prep runs answer-prep on prep_model (default Local model bo
   assert.equal(sw.else.model, undefined);
   assert.equal(sw.as, "prep");
 });
+
+test("deal-memo stays bounded and skips the app-only partner gate for terminal runs", () => {
+  const wf = YAML.parse(readRepo(".pi/workflows/deal-memo.yaml"));
+  const review = wf.flow.steps.find((s: { label?: string }) => s.label === "partner-review");
+  assert.equal(review.kind, "switch");
+  assert.equal(review.on, "{params.run_id}");
+  assert.deepEqual(review.cases[0].when, { eq: ["", ""] });
+  assert.match(review.cases[0].then.value, /DECISION: skipped/);
+  assert.equal(review.else.profile, "attorney-gate");
+  assert.equal(review.as, "gate");
+
+  const drafter = readRepo(".pi/agents/deal-memo-drafter.md");
+  const synthesizer = readRepo(".pi/agents/deal-memo-synthesizer.md");
+  assert.match(drafter, /under 500 words/);
+  assert.match(drafter, /Do not invent dates, dollar amounts, percentages/);
+  assert.match(synthesizer, /under 2,500 words/);
+  assert.match(synthesizer, /Do not add dates, deal economics, legal requirements/);
+});
+
+test("adversarial-brief keeps debate analysis source-bound and terminal runs deterministic", () => {
+  const wf = YAML.parse(readRepo(".pi/workflows/adversarial-brief.yaml"));
+  const threshold = wf.params.find((p: { name: string }) => p.name === "severity_threshold");
+  const launch = YAML.parse(wf.doc.split("```orchestrator-launch")[1].split("```")[0]);
+  const thresholdField = launch.fields.find((f: { param: string }) => f.param === "severity_threshold");
+  assert.equal(threshold.default, "10");
+  assert.deepEqual(thresholdField.options, ["5", "6", "7", "8", "9", "10"]);
+  const debateTeams: Array<Record<string, any>> = [];
+  const collectTeams = (node: unknown) => {
+    if (Array.isArray(node)) return node.forEach(collectTeams);
+    if (!node || typeof node !== "object") return;
+    const obj = node as Record<string, any>;
+    if (obj.kind === "parallel" && ["blue-team", "red-team"].includes(obj.label)) debateTeams.push(obj);
+    Object.values(obj).forEach(collectTeams);
+  };
+  collectTeams(wf.flow);
+  assert.equal(debateTeams.length, 4);
+  for (const team of debateTeams) assert.equal(team.concurrency, 1, team.label);
+  for (const label of ["attorney-gate", "quality-guards"]) {
+    const step = wf.flow.steps.find((s: { label?: string }) => s.label === label);
+    assert.equal(step.kind, "switch", label);
+    assert.equal(step.on, "{params.run_id}", label);
+    assert.deepEqual(step.cases[0].when, { eq: ["", ""] }, label);
+    assert.equal(step.as, label === "attorney-gate" ? "gate" : "guards", label);
+  }
+  const synthesizer = readRepo(".pi/agents/brief-synthesizer.md");
+  const writer = readRepo(".pi/agents/brief-report-writer.md");
+  const analyst = readRepo(".pi/agents/brief-analyst.md");
+  const fortifier = readRepo(".pi/agents/brief-fortifier.md");
+  assert.match(synthesizer, /Stay under 1,800 words/);
+  assert.match(synthesizer, /Prefix conclusions drawn from the debate with `Debate assessment:`/);
+  assert.match(writer, /Stay under 3,500 words/);
+  assert.match(writer, /Do not state that a party conceded, filed, invoked a protocol/);
+  assert.match(writer, /Every review-checklist line must begin exactly/);
+  assert.match(analyst, /## Original brief/);
+  assert.match(analyst, /complete source brief verbatim/);
+  assert.match(fortifier, /tools: \[\]/);
+  assert.match(fortifier, /complete original brief is supplied in the task/);
+  assert.match(fortifier, /decision is `skipped`, apply no recommendations/);
+  const fortifierStep = wf.flow.steps.find((s: { label?: string }) => s.label === "fortifier");
+  assert.match(fortifierStep.task, /DECISION is skipped, apply no recommendations/);
+});
+
+test("cross-exam simulation keeps terminal turns deterministic and coaching non-scripted", () => {
+  const wf = YAML.parse(readRepo(".pi/workflows/cross-exam-simulation.yaml"));
+  assert.match(wf.params.find((p: { name: string }) => p.name === "case_facts").default, /Harbor Peak alleges/);
+  const loop = wf.flow.steps.find((s: { label?: string }) => s.label === "examination");
+  const answer = loop.body.steps.find((s: { label?: string }) => s.label === "witness-answer");
+  assert.equal(answer.kind, "switch");
+  assert.equal(answer.on, "{params.run_id}");
+  assert.match(answer.cases[0].then.value, /need to review the underlying records/);
+  const guard = wf.flow.steps.find((s: { label?: string }) => s.label === "quality-guards");
+  assert.equal(guard.kind, "switch");
+  const debrief = wf.flow.steps.find((s: { label?: string }) => s.label === "debrief");
+  assert.match(debrief.task, /Every checklist line MUST begin exactly/);
+  assert.match(debrief.task, /must not script testimony/);
+  assert.match(debrief.task, /exactly 3-5 separate Markdown bullets/);
+  assert.match(debrief.task, /Prefix every inference with `Assessment:`/);
+  assert.match(debrief.task, /Analyze only the transcript and scores/);
+  assert.match(debrief.task, /never examination tactics or question scripts/);
+  for (const name of ["xexam-strategist", "xexam-question-generator", "xexam-answer-scorer", "xexam-debriefer"]) {
+    const profile = readRepo(`.pi/agents/${name}.md`);
+    assert.match(profile, /thinking: off/);
+  }
+  assert.match(readRepo(".pi/agents/xexam-debriefer.md"), /Never script testimony/);
+});
+
+test("discovery review withholds uncertain privilege and skips app gates in terminal runs", () => {
+  const wf = YAML.parse(readRepo(".pi/workflows/discovery-review.yaml"));
+  for (const label of ["gate-1-privilege", "gate-2-relevance", "gate-3-hot-docs", "gate-4-qa-sample", "quality-guards"]) {
+    const step = wf.flow.steps.find((s: { label?: string }) => s.label === label);
+    assert.equal(step.kind, "switch", label);
+    assert.equal(step.on, "{params.run_id}", label);
+  }
+  const inventory = wf.flow.steps.find((s: { label?: string }) => s.label === "inventory");
+  assert.match(inventory.task, /Exclude README files/);
+  const report = wf.flow.steps.find((s: { label?: string }) => s.label === "report");
+  assert.match(report.task, /A skipped gate clears nothing/);
+  assert.match(report.task, /Every checklist line MUST begin exactly/);
+  const writer = readRepo(".pi/agents/discovery-production-writer.md");
+  assert.match(writer, /potentially-privileged/);
+  assert.match(writer, /A skipped gate never clears a document/);
+});
+
+test("due diligence stays source-bound and skips app gates in terminal runs", () => {
+  const wf = YAML.parse(readRepo(".pi/workflows/due-diligence.yaml"));
+  for (const label of ["gate-1-analysis", "gate-2-synthesis", "quality-guards"]) {
+    const step = wf.flow.steps.find((s: { label?: string }) => s.label === label);
+    assert.equal(step.kind, "switch", label);
+    assert.equal(step.on, "{params.run_id}", label);
+  }
+  const synthesis = wf.flow.steps.find((s: { label?: string }) => s.label === "synthesis");
+  const analyse = wf.flow.steps.find((s: { label?: string }) => s.label === "analyse");
+  assert.match(analyse.body.task, /CLOSED RECORD: stay under 600 words/);
+  assert.match(analyse.body.task, /Never mention invalidity, CJEU, Schrems, 2020/);
+  assert.match(synthesis.task, /under 2,000 words/);
+  assert.match(synthesis.task, /prefix\s+every inference with `Assessment:`/);
+  const report = wf.flow.steps.find((s: { label?: string }) => s.label === "report");
+  assert.match(report.task, /A skipped gate records no correction/);
+  assert.match(report.task, /Every checklist line MUST begin exactly/);
+  assert.match(readRepo(".pi/agents/dd-synthesizer.md"), /Do not invent or extrapolate dates, amounts/);
+  assert.match(readRepo(".pi/agents/dd-report-writer.md"), /never turn a possible remedy or future event into a certainty/);
+  assert.match(readRepo(".pi/agents/dd-report-writer.md"), /Do not add outside law, regulatory dates, fine caps/);
+  assert.match(readRepo(".pi/agents/dd-report-writer.md"), /delete any matrix language about invalidity, CJEU, Schrems, 2020/);
+  assert.match(readRepo(".pi/agents/dd-report-writer.md"), /Every inferred diligence request must begin `Recommendation:`/);
+  assert.match(readRepo(".pi/agents/dd-report-writer.md"), /never list gate status, skipped decisions/);
+  assert.match(readRepo(".pi/agents/dd-report-writer.md"), /sub-processors HIGH or MEDIUM, never LOW/);
+});
+
+test("trial simulator bounds scenario context and labels simulated conclusions", () => {
+  const wf = YAML.parse(readRepo(".pi/workflows/monte-carlo-trial-simulator.yaml"));
+  const simulate = wf.flow.steps.find((s: { label?: string }) => s.label === "simulate");
+  assert.equal(simulate.concurrency, 1);
+  const argument = simulate.body.steps.find((s: { label?: string }) => s.label === "argument");
+  for (const branch of Object.values(argument.branches) as Array<{ task: string }>) {
+    assert.match(branch.task, /Stay under 600 words/);
+    assert.match(branch.task, /Prefix jury inferences with `Argument:`/);
+  }
+  const statistics = wf.flow.steps.find((s: { label?: string }) => s.label === "statistics");
+  assert.match(statistics.task, /fewer\s+than 10 outcomes report min\/max rather than interpolated percentiles/);
+  assert.match(statistics.task, /Label every sensitivity\s+conclusion `Simulation association:`/);
+  const report = wf.flow.steps.find((s: { label?: string }) => s.label === "report");
+  assert.match(report.task, /CLOSED RECORD: stay under 2,000 words/);
+  assert.match(report.task, /Never say a simulated judge or jury actually\s+ruled/);
+  assert.match(report.task, /Never turn scenario frequency into probability/);
+  assert.match(report.task, /simulation log may contain only SIM id, verdict, damages/);
+  assert.match(report.task, /never say an exception was established/);
+  assert.match(report.task, /Every checklist line MUST begin exactly/);
+  const guard = wf.flow.steps.find((s: { label?: string }) => s.label === "quality-guards");
+  assert.equal(guard.kind, "switch");
+  assert.equal(guard.on, "{params.run_id}");
+  for (const name of ["trial-parameter-designer", "trial-advocate", "trial-jury", "trial-statistician", "trial-report-writer"]) {
+    assert.match(readRepo(`.pi/agents/${name}.md`), /thinking: off/);
+  }
+  assert.match(readRepo(".pi/agents/trial-jury.md"), /A plaintiff or mixed verdict must copy one exact nonzero dollar figure/);
+  assert.match(readRepo(".pi/agents/trial-report-writer.md"), /Every attorney-review checklist line must begin exactly/);
+});
+
+test("persistent case team bounds living state and scores only the incoming batch", () => {
+  const wf = YAML.parse(readRepo(".pi/workflows/persistent-case-team.yaml"));
+  const guards = YAML.parse(wf.doc.split("```orchestrator-guards")[1].split("```")[0]);
+  assert.deepEqual(guards.checks[0].record, ["{params.target}"], "generated record cannot support itself");
+  const inventory = wf.flow.steps.find((s: { label?: string }) => s.label === "inventory");
+  assert.match(inventory.task, /Exclude README\/index files/);
+  const teams = wf.flow.steps.find((s: { label?: string }) => s.label === "matter-teams");
+  assert.match(teams.branches.entities.task, /stay under 2,000 words/);
+  assert.match(teams.branches.timeline.task, /Use only exact stated dates/);
+  assert.match(teams.branches.documents.task, /Use `not stated` rather than infer/);
+  const record = wf.flow.steps.find((s: { label?: string }) => s.label === "record-writer");
+  assert.match(record.task, /complete record must stay under 1,800 words/);
+  assert.match(record.task, /THE WRITTEN FILE MUST HAVE EXACTLY this structure/);
+  assert.match(record.task, /After writing, read the file back and correct/);
+  assert.match(record.task, /Timeline includes ONLY events with an exact date/);
+  const validator = wf.flow.steps.find((s: { label?: string }) => s.label === "record-validator");
+  assert.equal(validator.profile, "matter-record-validator");
+  assert.match(validator.task, /preserve range endpoints/);
+  assert.match(validator.task, /Updated: generated locally/);
+  assert.match(validator.task, /number of distinct document-index rows in the completed record/);
+  const report = wf.flow.steps.find((s: { label?: string }) => s.label === "report");
+  assert.equal(report.profile, "matter-report-writer");
+  assert.match(report.task, /Every factual statement\s+must cite an exact incoming path/);
+  assert.match(report.task, /every checklist line MUST begin exactly/);
+  const guard = wf.flow.steps.find((s: { label?: string }) => s.label === "quality-guards");
+  assert.equal(guard.kind, "value");
+  assert.match(guard.value, /Pending local scorecard/);
+  for (const name of ["matter-entity-extractor", "matter-timeline-extractor", "matter-document-indexer", "matter-record-writer", "matter-record-validator", "matter-report-writer"]) {
+    assert.match(readRepo(`.pi/agents/${name}.md`), /thinking: off/);
+  }
+  assert.match(readRepo(".pi/agents/matter-report-writer.md"), /LOW is only an administrative completeness gap/);
+  assert.match(readRepo(".pi/agents/matter-record-writer.md"), /Never derive interest, totals, percentages/);
+  assert.match(readRepo(".pi/agents/matter-report-writer.md"), /wage claims, and an open government audit are HIGH/);
+  assert.match(readRepo(".pi/agents/matter-report-writer.md"), /document's issue date separate from dates of events/);
+});

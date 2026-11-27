@@ -5,7 +5,8 @@
   "description": "Runtime deps for the OrchestratorAI Pi extension. The decision-model client is vendored in ./decisions.",
   "scripts": {
     "cases": "node decisions/run-cases.ts",
-    "test": "node --test test/"
+    "guards": "node guard-check.ts",
+    "test": "node --test guards.test.ts test/"
   },
   "dependencies": {
     "yaml": "^2.9.1"

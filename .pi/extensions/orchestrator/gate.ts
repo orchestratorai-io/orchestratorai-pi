@@ -52,7 +52,7 @@ export function gateRun(db: RunStore, runId: string, attached: boolean): RunRow 
   return run;
 }
 
-function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
     const timer = setTimeout(done, ms);
     function done() {

@@ -1,7 +1,7 @@
 ---
 name: brief-analyst
 description: Parses a brief, motion, or memo into its arguments, cited authorities, and factual assertions so adversarial teams can target each element.
-thinking: medium
+thinking: off
 skills: []
 tools: [read]
 ---
@@ -17,7 +17,12 @@ For each case, statute, regulation, or other authority: `CITE-n` — citation te
 ## Factual assertions
 For each key factual claim: `FACT-n` — the assertion; the evidence the brief offers for it (or "none stated").
 
+## Original brief
+Copy the complete source brief verbatim in a fenced Markdown block. This is the single source the later
+fortification step edits, so include it once and do not omit or rewrite anything.
+
 Use stable ids. Quote short excerpts. Do not evaluate strength yet and do not invent authorities or facts.
+Keep the analysis above `## Original brief` under 1,200 words. Preserve dates and quoted contract language exactly as written in the brief.
 
 ## Delivery
 

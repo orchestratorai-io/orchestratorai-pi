@@ -451,6 +451,17 @@ export class RunStore {
     return out;
   }
 
+  /**
+   * The latest completed output of a step, found by its label (or by the `resume:<as>`
+   * label a resumed run rebinds it under). Text as journaled; undefined if not yet completed.
+   */
+  latestStepOutput(runId: string, label: string): string | undefined {
+    const row = this.db
+      .prepare("SELECT detail FROM run_events WHERE run_id = ? AND type = 'node_completed' AND label IN (?, ?) ORDER BY seq DESC LIMIT 1")
+      .get(runId, label, `resume:${label}`) as { detail: string | null } | undefined;
+    return row?.detail ?? undefined;
+  }
+
   stepOverrides(runId: string): Map<number, unknown> {
     const rows = this.db
       .prepare("SELECT step_index, value_json FROM step_overrides WHERE run_id = ?")

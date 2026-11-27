@@ -21,3 +21,206 @@ cases:
       signal: >-
         California finalised regulations requiring registered data brokers to process deletion requests
         submitted through the state's new one-stop deletion platform within 45 days, effective August 2026.
+
+  # Added 2026-11-23: the sentinel fixture batch against the full tracked portfolio (matters/portfolio.md),
+  # as the report guard sends them.
+  - name: Ninth Circuit residuals ruling vs the full portfolio (sentinel fixture)
+    expect: [block]
+    state:
+      portfolio: |-
+        # Tracked portfolio (synthetic)
+
+        **Synthetic fixture for demonstration. All sources, authorities and developments are fictional.**
+
+        The holdings Portfolio Sentinel screens incoming signals against.
+
+        ## Clients
+        | Client | Sector | Notes |
+        |---|---|---|
+        | Aspen Devices, Inc. | Data infrastructure | Defendant in Harbor Peak litigation |
+        | Cedar Analytics, Inc. | Analytics SaaS | Acquisition target; EEA customer data |
+        | Northwind Retail Group | Retail | Cedar's largest customer |
+
+        ## Active matters
+        | Matter | Type | Client |
+        |---|---|---|
+        | Harbor Peak Systems v. Aspen Devices | Trade secret / NDA litigation | Aspen Devices |
+        | Cedar Analytics acquisition | M&A, buyer-side diligence | Harbor Peak Systems |
+        | Cedar wage-and-hour audit | Employment, state agency | Cedar Analytics |
+
+        ## Jurisdictions
+        United States (federal, Ninth Circuit, District of Demo), State of Demo, Delaware, New York, European Union.
+
+        ## Practice areas
+        Trade secrets, commercial contracts, privacy and data protection, employment, corporate and M&A.
+
+        ## Entities of interest
+        Meridian Credit Partners LP (secured lender), Talbot Venture Partners, Greyfield Capital, Kessler Data Consulting.
+      signal: |-
+        **Synthetic fixture for demonstration. All sources, authorities and developments are fictional.**
+
+        # Ruling - Meridian Analytics v. Corvid Labs (9th Cir., Sept 8 2026)
+
+        **Type:** ruling  **Jurisdiction:** Ninth Circuit (federal)  **Practice area:** trade secrets, commercial contracts
+
+        The Ninth Circuit narrowed the scope of residuals clauses, holding that a clause licensing "unaided memory" does not reach a design that a party reconstructed with the help of contemporaneous notes, and that the burden of showing the memory was unaided sits with the party invoking the clause. The court expressly declined to decide whether a residuals licence can bar a DTSA claim.
+  - name: EU enforcement on lapsed transfer framework vs the full portfolio
+    expect: [block, review]
+    state:
+      portfolio: |-
+        # Tracked portfolio (synthetic)
+
+        **Synthetic fixture for demonstration. All sources, authorities and developments are fictional.**
+
+        The holdings Portfolio Sentinel screens incoming signals against.
+
+        ## Clients
+        | Client | Sector | Notes |
+        |---|---|---|
+        | Aspen Devices, Inc. | Data infrastructure | Defendant in Harbor Peak litigation |
+        | Cedar Analytics, Inc. | Analytics SaaS | Acquisition target; EEA customer data |
+        | Northwind Retail Group | Retail | Cedar's largest customer |
+
+        ## Active matters
+        | Matter | Type | Client |
+        |---|---|---|
+        | Harbor Peak Systems v. Aspen Devices | Trade secret / NDA litigation | Aspen Devices |
+        | Cedar Analytics acquisition | M&A, buyer-side diligence | Harbor Peak Systems |
+        | Cedar wage-and-hour audit | Employment, state agency | Cedar Analytics |
+
+        ## Jurisdictions
+        United States (federal, Ninth Circuit, District of Demo), State of Demo, Delaware, New York, European Union.
+
+        ## Practice areas
+        Trade secrets, commercial contracts, privacy and data protection, employment, corporate and M&A.
+
+        ## Entities of interest
+        Meridian Credit Partners LP (secured lender), Talbot Venture Partners, Greyfield Capital, Kessler Data Consulting.
+      signal: |-
+        **Synthetic fixture for demonstration. All sources, authorities and developments are fictional.**
+
+        # Enforcement action - Data Protection Authority fines analytics vendor (Sept 5 2026)
+
+        **Type:** enforcement  **Jurisdiction:** EU  **Practice area:** privacy
+
+        The supervisory authority fined a mid-sized analytics processor EUR 2.1M for transferring personal data to processors in third countries while relying on a lapsed adequacy framework rather than standard contractual clauses, and for failing to keep its published sub-processor list current. The decision stresses that a stale sub-processor list is itself an infringement, not merely a contractual matter.
+  - name: state wage-classification bill, tracked audit matter
+    expect: [block, review]
+    state:
+      portfolio: |-
+        # Tracked portfolio (synthetic)
+
+        **Synthetic fixture for demonstration. All sources, authorities and developments are fictional.**
+
+        The holdings Portfolio Sentinel screens incoming signals against.
+
+        ## Clients
+        | Client | Sector | Notes |
+        |---|---|---|
+        | Aspen Devices, Inc. | Data infrastructure | Defendant in Harbor Peak litigation |
+        | Cedar Analytics, Inc. | Analytics SaaS | Acquisition target; EEA customer data |
+        | Northwind Retail Group | Retail | Cedar's largest customer |
+
+        ## Active matters
+        | Matter | Type | Client |
+        |---|---|---|
+        | Harbor Peak Systems v. Aspen Devices | Trade secret / NDA litigation | Aspen Devices |
+        | Cedar Analytics acquisition | M&A, buyer-side diligence | Harbor Peak Systems |
+        | Cedar wage-and-hour audit | Employment, state agency | Cedar Analytics |
+
+        ## Jurisdictions
+        United States (federal, Ninth Circuit, District of Demo), State of Demo, Delaware, New York, European Union.
+
+        ## Practice areas
+        Trade secrets, commercial contracts, privacy and data protection, employment, corporate and M&A.
+
+        ## Entities of interest
+        Meridian Credit Partners LP (secured lender), Talbot Venture Partners, Greyfield Capital, Kessler Data Consulting.
+      signal: |-
+        **Synthetic fixture for demonstration. All sources, authorities and developments are fictional.**
+
+        # Proposed legislation - State Worker Classification Enforcement Act (Sept 2 2026)
+
+        **Type:** legislation  **Jurisdiction:** State of Demo  **Practice area:** employment
+
+        Bill would extend the limitations period for misclassification claims from two to four years and permit the state agency to open an audit on a single worker complaint. Committee hearing scheduled for October.
+  - name: admiralty ruling vs the full portfolio
+    expect: [pass]
+    state:
+      portfolio: |-
+        # Tracked portfolio (synthetic)
+
+        **Synthetic fixture for demonstration. All sources, authorities and developments are fictional.**
+
+        The holdings Portfolio Sentinel screens incoming signals against.
+
+        ## Clients
+        | Client | Sector | Notes |
+        |---|---|---|
+        | Aspen Devices, Inc. | Data infrastructure | Defendant in Harbor Peak litigation |
+        | Cedar Analytics, Inc. | Analytics SaaS | Acquisition target; EEA customer data |
+        | Northwind Retail Group | Retail | Cedar's largest customer |
+
+        ## Active matters
+        | Matter | Type | Client |
+        |---|---|---|
+        | Harbor Peak Systems v. Aspen Devices | Trade secret / NDA litigation | Aspen Devices |
+        | Cedar Analytics acquisition | M&A, buyer-side diligence | Harbor Peak Systems |
+        | Cedar wage-and-hour audit | Employment, state agency | Cedar Analytics |
+
+        ## Jurisdictions
+        United States (federal, Ninth Circuit, District of Demo), State of Demo, Delaware, New York, European Union.
+
+        ## Practice areas
+        Trade secrets, commercial contracts, privacy and data protection, employment, corporate and M&A.
+
+        ## Entities of interest
+        Meridian Credit Partners LP (secured lender), Talbot Venture Partners, Greyfield Capital, Kessler Data Consulting.
+      signal: |-
+        **Synthetic fixture for demonstration. All sources, authorities and developments are fictional.**
+
+        # Ruling - Port of Calder Authority v. Sundance Shipping (Sept 7 2026)
+
+        **Type:** ruling  **Jurisdiction:** Eleventh Circuit (federal)  **Practice area:** admiralty
+
+        The court clarified the allocation of demurrage liability between charterer and terminal operator where a berth is unavailable due to weather. No bearing on technology, privacy, or employment matters.
+  - name: municipal bond news vs the full portfolio
+    expect: [pass]
+    state:
+      portfolio: |-
+        # Tracked portfolio (synthetic)
+
+        **Synthetic fixture for demonstration. All sources, authorities and developments are fictional.**
+
+        The holdings Portfolio Sentinel screens incoming signals against.
+
+        ## Clients
+        | Client | Sector | Notes |
+        |---|---|---|
+        | Aspen Devices, Inc. | Data infrastructure | Defendant in Harbor Peak litigation |
+        | Cedar Analytics, Inc. | Analytics SaaS | Acquisition target; EEA customer data |
+        | Northwind Retail Group | Retail | Cedar's largest customer |
+
+        ## Active matters
+        | Matter | Type | Client |
+        |---|---|---|
+        | Harbor Peak Systems v. Aspen Devices | Trade secret / NDA litigation | Aspen Devices |
+        | Cedar Analytics acquisition | M&A, buyer-side diligence | Harbor Peak Systems |
+        | Cedar wage-and-hour audit | Employment, state agency | Cedar Analytics |
+
+        ## Jurisdictions
+        United States (federal, Ninth Circuit, District of Demo), State of Demo, Delaware, New York, European Union.
+
+        ## Practice areas
+        Trade secrets, commercial contracts, privacy and data protection, employment, corporate and M&A.
+
+        ## Entities of interest
+        Meridian Credit Partners LP (secured lender), Talbot Venture Partners, Greyfield Capital, Kessler Data Consulting.
+      signal: |-
+        **Synthetic fixture for demonstration. All sources, authorities and developments are fictional.**
+
+        # News - Municipal bond disclosure reform advances (Sept 3 2026)
+
+        **Type:** news  **Jurisdiction:** US  **Practice area:** public finance
+
+        A working group advanced proposals to standardise continuing-disclosure filings for municipal issuers. Comment period opens in November.

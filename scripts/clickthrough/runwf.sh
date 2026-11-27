@@ -2,6 +2,8 @@
 # runwf.sh <workflow-id> [gate-note] [max-minutes]
 # Drives one workflow through the real UI: select -> new run -> demo sample -> Start,
 # then answers every attorney gate and the final review with real clicks.
+# MODEL=<ollama model> types that model into the run's model box before Start
+# (e.g. when the app's default model is not installed).
 # The store is only used to decide *when* to look; every decision is a UI click.
 set -u
 WF="$1"
@@ -37,6 +39,11 @@ else
   say "sample: none (typed fields only)"
 fi
 
+if [ -n "${MODEL:-}" ]; then
+  $T context.model "$MODEL" >>"$LOG" 2>&1; sleep 1
+  say "model: $($D val context.model 2>/dev/null)"
+fi
+
 # Start is disabled while any run is still live (one Pi process at a time), so wait
 # for the previous run to be fully wound down rather than failing on a race.
 EN=""
@@ -56,6 +63,7 @@ $D press launch.start >>"$LOG" 2>&1
 say "Start pressed"
 
 # Wait for the new run row to exist, then track it.
+# If max-minutes runs out first, the run keeps going: finish it with reviewrun.sh.
 RID=""
 for i in $(seq 1 60); do
   sleep 3

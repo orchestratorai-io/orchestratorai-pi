@@ -8,7 +8,7 @@ params:
   - { name: knowledge_dir, default: "matters", description: "Folder searched as the firm knowledge base" }
   - { name: run_id, default: "", description: "OrchestratorAI run id (set by the app; leave empty from the TUI)" }
 doc: |-
-  Flat single-agent workflow (no gate; the answer is reviewed in the console).
+  One answering agent (no mid-flow gate; the answer is reviewed in the console), then the quality guards.
   Ported from orchestratorai-local `legal/workflows/kb-query` (a RAG service) — here the
   knowledge base is a folder the agent greps and reads, so every citation is a file path.
 
@@ -27,20 +27,52 @@ doc: |-
     focusSubtitle: Citations point at files in the knowledge folder; unverified statements are labeled.
     blurb: Confirm the cited answer before relying on it. Recording Approve or Request changes completes the attorney-review checkpoint.
   ```
-profile: kb-answerer
-task: |-
-  Question: {params.question}
-  Knowledge folder: {params.knowledge_dir}
-  Mode: {params.mode} — Fast: answer from the first strong hits, keep it short. Cited: balanced, cite every claim.
-  Deep: search broadly (synonyms, related terms), read more files, cover secondary points. Audit: also
-  surface passages that conflict with each other and flag risk.
-  Response shape: {params.response}.
 
-  The first line of the result must be exactly:
-  # Knowledge base query — [short question label]
-  Then the answer in the requested shape, a ## Sources section listing every file cited, and a
-  ## Attorney review focus section with unchecked tasks (`- [ ] SEVERITY — issue; action`) for any
-  conflict, gap, or unverified statement (HIGH/MEDIUM/LOW). If nothing needs review, include one LOW item
-  saying so.
+  ```orchestrator-guards
+  step: answer
+  checks:
+    - { guard: citations, record: ["{params.knowledge_dir}"], skip: [Sources, Quality guards] }
+    - { guard: severity }
+  ```
+flow:
+  kind: sequence
+  steps:
+    - kind: agent
+      profile: kb-answerer
+      label: answer
+      task: |-
+        Question: {params.question}
+        Knowledge folder: {params.knowledge_dir}
+        Mode: {params.mode} — Fast: answer from the first strong hits, keep it short. Cited: balanced, cite every claim.
+        Deep: search broadly (synonyms, related terms), read more files, cover secondary points. Audit: also
+        surface passages that conflict with each other and flag risk.
+        Response shape: {params.response}.
 
-  Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+        The first line of the result must be exactly:
+        # Knowledge base query — [short question label]
+        Then the answer in the requested shape, a ## Sources section listing every file cited, and a
+        ## Attorney review focus section with unchecked tasks (`- [ ] SEVERITY — issue; action`) for any
+        conflict, gap, or unverified statement (HIGH/MEDIUM/LOW). If nothing needs review, include one LOW item
+        saying so.
+
+        Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
+      as: draft
+
+    # Quality guards (see the orchestrator-guards block in doc): Clef checks the finished answer,
+    # and the result is appended to it, so the attorney reviews the answer and its guard section together.
+    - kind: agent
+      profile: guard-gate
+      label: quality-guards
+      task: |-
+        Call the report_guard tool exactly once with run_id "{params.run_id}".
+        Then submit the tool's returned Markdown verbatim as your result.
+      as: guards
+
+    - kind: value
+      label: guarded-report
+      value: |-
+        {draft}
+
+        {guards}
+      as: report
+display: report
