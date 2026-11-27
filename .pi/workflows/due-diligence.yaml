@@ -76,6 +76,7 @@ flow:
         label: analyst
         task: |-
           Required source: {item.path}
+          Diligence evidence: {item.path}
           Analyse deal-room document {index}: {item.name} (type: {item.type})
           Use the primary source provided by Pi. If it was not supplied inline, call the read tool
           on {item.path} before classifying or writing any finding. If unreadable, submit an error.
@@ -125,6 +126,7 @@ flow:
       profile: dd-synthesizer
       label: synthesis
       task: |-
+        Diligence evidence: {params.target}
         Synthesize the deal room at {params.target}.
         Transaction: {params.transaction}
         Objective: {params.context}
@@ -173,6 +175,7 @@ flow:
       profile: dd-report-writer
       label: report
       task: |-
+        Diligence evidence: {params.target}
         Write the final diligence report for the deal room at {params.target}.
         Transaction: {params.transaction}
         Objective: {params.context}

@@ -20,3 +20,8 @@ The roster restored Meridian Credit Partners as the lender in synthesis. Manual 
 | Qwen 3.6 35B MLX `4850e8f4` | 4m55s | 7,037 | Block, 2 unsupported and 2 flagged across 10 claims | Pass, 10 within one level | 2/2 |
 
 The citation block covers the false three-month SLA claim and an updated 409A report presented without source support. This run verifies the bounded execution path. The report needs correction before use.
+
+
+## Citation follow-up
+
+Run `4889cd81` on `qwen3.6:35b-mlx` completed in 2m57s and peaked at 7,594 input tokens. Pi calculates the below-threshold count from an explicit complete monthly window and retains the contractual condition from the same source. The report correctly records two observations below 99.5% and leaves the three-consecutive-month termination trigger unestablished for this window. It quotes `fixtures/dealroom/03-cap-table-summary.md` for the March 2026 grant, November 2024 valuation, and absence of a refresh in the room. The scorecard routed citations to review with zero unsupported claims across ten samples, passed all ten severities within one level, and caught both seeded defects.
