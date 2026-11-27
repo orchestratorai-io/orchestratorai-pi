@@ -14,9 +14,22 @@ import { fileURLToPath } from "node:url";
 import YAML from "yaml";
 import { RunStore } from "../store.ts";
 import { Journal, buildResumeFlow, type AgentsApi } from "../journal.ts";
+import { ollamaThinkingPayload } from "../ollama-thinking.ts";
 
 const REPO = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..");
 const readRepo = (rel: string) => fs.readFileSync(path.join(REPO, rel), "utf8");
+
+test("Ollama Qwen requests explicitly honor Pi's disabled thinking", () => {
+  const payload = { messages: [], stream: true };
+  const qwen = { provider: "ollama", api: "openai-completions", id: "qwen3.6:35b-mlx" };
+  assert.deepEqual(ollamaThinkingPayload(payload, qwen, "off"), { ...payload, reasoning_effort: "none" });
+  assert.deepEqual(ollamaThinkingPayload(payload, { ...qwen, id: "qwen3.5:9b" }, "off"),
+    { ...payload, reasoning_effort: "none" });
+  assert.equal(ollamaThinkingPayload(payload, qwen, "low"), undefined);
+  assert.equal(ollamaThinkingPayload(payload, { ...qwen, provider: "other" }, "off"), undefined);
+  assert.equal(ollamaThinkingPayload(payload, { ...qwen, api: "other" }, "off"), undefined);
+  assert.equal(ollamaThinkingPayload(payload, { ...qwen, id: "gemma4:e4b" }, "off"), undefined);
+});
 
 /** How a saved single-agent workflow such as kb-query is stored once pi-agents expands it. */
 const KB_FLOW = {
@@ -219,19 +232,33 @@ test("cross-exam simulation keeps terminal turns deterministic and coaching non-
   const wf = YAML.parse(readRepo(".pi/workflows/cross-exam-simulation.yaml"));
   assert.match(wf.params.find((p: { name: string }) => p.name === "case_facts").default, /Harbor Peak alleges/);
   const loop = wf.flow.steps.find((s: { label?: string }) => s.label === "examination");
+  assert.equal(loop.kind, "while");
+  assert.equal(loop.max, 5);
+  const scorer = loop.body.steps.find((s: { label?: string }) => s.label === "scorer");
+  assert.equal(scorer.json.properties.transcript, undefined, "the model only scores the current turn");
+  const accumulated = loop.body.steps.at(-1);
+  assert.equal(accumulated.kind, "value");
+  assert.match(accumulated.value.transcript, /\{current\.transcript\}[\s\S]*\{q\.question\}[\s\S]*\{answer\}/);
   const answer = loop.body.steps.find((s: { label?: string }) => s.label === "witness-answer");
   assert.equal(answer.kind, "switch");
   assert.equal(answer.on, "{params.run_id}");
   assert.match(answer.cases[0].then.value, /need to review the underlying records/);
   const guard = wf.flow.steps.find((s: { label?: string }) => s.label === "quality-guards");
   assert.equal(guard.kind, "switch");
-  const debrief = wf.flow.steps.find((s: { label?: string }) => s.label === "debrief");
+  const assembly = wf.flow.steps.find((s: { label?: string }) => s.label === "debrief");
+  assert.equal(assembly.kind, "value");
+  assert.match(assembly.value, /## Transcript\n\{exam\.transcript\}/);
+  const debrief = wf.flow.steps.find((s: { label?: string }) => s.label === "debrief-analysis");
+  assert.doesNotMatch(debrief.task, /\{strategy\}/);
   assert.match(debrief.task, /Every checklist line MUST begin exactly/);
   assert.match(debrief.task, /must not script testimony/);
-  assert.match(debrief.task, /exactly 3-5 separate Markdown bullets/);
+  assert.equal(debrief.json.properties.coaching.minItems, 3);
+  assert.equal(debrief.json.properties.coaching.maxItems, 3);
+  assert.match(assembly.value, /## Coaching recommendations\n- Turn \{analysis\.coaching\.0\.turn\}/);
   assert.match(debrief.task, /Prefix every inference with `Assessment:`/);
   assert.match(debrief.task, /Analyze only the transcript and scores/);
-  assert.match(debrief.task, /never examination tactics or question scripts/);
+  assert.match(debrief.task, /tactic for counsel/);
+  assert.match(debrief.task, /same fixed terminal response/);
   for (const name of ["xexam-strategist", "xexam-question-generator", "xexam-answer-scorer", "xexam-debriefer"]) {
     const profile = readRepo(`.pi/agents/${name}.md`);
     assert.match(profile, /thinking: off/);
@@ -265,9 +292,10 @@ test("due diligence stays source-bound and skips app gates in terminal runs", ()
   }
   const synthesis = wf.flow.steps.find((s: { label?: string }) => s.label === "synthesis");
   const analyse = wf.flow.steps.find((s: { label?: string }) => s.label === "analyse");
-  assert.match(analyse.body.task, /CLOSED RECORD: stay under 600 words/);
+  assert.equal(analyse.concurrency, 1);
+  assert.match(analyse.body.task, /CLOSED RECORD: aim for 350 words/);
   assert.match(analyse.body.task, /Never mention invalidity, CJEU, Schrems, 2020/);
-  assert.match(synthesis.task, /under 2,000 words/);
+  assert.match(synthesis.task, /under 1,500 words/);
   assert.match(synthesis.task, /prefix\s+every inference with `Assessment:`/);
   const report = wf.flow.steps.find((s: { label?: string }) => s.label === "report");
   assert.match(report.task, /A skipped gate records no correction/);
@@ -286,10 +314,16 @@ test("trial simulator bounds scenario context and labels simulated conclusions",
   const simulate = wf.flow.steps.find((s: { label?: string }) => s.label === "simulate");
   assert.equal(simulate.concurrency, 1);
   const argument = simulate.body.steps.find((s: { label?: string }) => s.label === "argument");
+  assert.equal(argument.concurrency, 1);
+  assert.deepEqual(argument.branches.plaintiff.json, argument.branches.defense.json);
+  assert.deepEqual(argument.branches.plaintiff.json.required, ["theory", "arguments"]);
   for (const branch of Object.values(argument.branches) as Array<{ task: string }>) {
-    assert.match(branch.task, /Stay under 600 words/);
-    assert.match(branch.task, /Prefix jury inferences with `Argument:`/);
+    assert.match(branch.task, /Aim for 350 words/);
+    assert.match(branch.task, /Prefix jury inferences with\s+`Argument:`/);
   }
+  const jury = simulate.body.steps.find((s: { label?: string }) => s.label === "jury");
+  assert.match(jury.task, /\{space\.damagesEvidence\}/);
+  assert.deepEqual(jury.json.properties.verdict.enum, ["plaintiff", "defense", "mixed"]);
   const statistics = wf.flow.steps.find((s: { label?: string }) => s.label === "statistics");
   assert.match(statistics.task, /fewer\s+than 10 outcomes report min\/max rather than interpolated percentiles/);
   assert.match(statistics.task, /Label every sensitivity\s+conclusion `Simulation association:`/);
@@ -317,17 +351,19 @@ test("persistent case team bounds living state and scores only the incoming batc
   const inventory = wf.flow.steps.find((s: { label?: string }) => s.label === "inventory");
   assert.match(inventory.task, /Exclude README\/index files/);
   const teams = wf.flow.steps.find((s: { label?: string }) => s.label === "matter-teams");
-  assert.match(teams.branches.entities.task, /stay under 2,000 words/);
+  assert.equal(teams.concurrency, 1);
+  assert.match(teams.branches.entities.task, /submit only compact entity rows/);
   assert.match(teams.branches.timeline.task, /Use only exact stated dates/);
   assert.match(teams.branches.documents.task, /Use `not stated` rather than infer/);
   const record = wf.flow.steps.find((s: { label?: string }) => s.label === "record-writer");
   assert.match(record.task, /complete record must stay under 1,800 words/);
   assert.match(record.task, /THE WRITTEN FILE MUST HAVE EXACTLY this structure/);
-  assert.match(record.task, /After writing, read the file back and correct/);
+  assert.match(record.task, /Check the schema and source values before the\s+single write/);
   assert.match(record.task, /Timeline includes ONLY events with an exact date/);
   const validator = wf.flow.steps.find((s: { label?: string }) => s.label === "record-validator");
   assert.equal(validator.profile, "matter-record-validator");
   assert.match(validator.task, /preserve range endpoints/);
+  assert.match(validator.task, /use one write\. Read it back/);
   assert.match(validator.task, /Updated: generated locally/);
   assert.match(validator.task, /number of distinct document-index rows in the completed record/);
   const report = wf.flow.steps.find((s: { label?: string }) => s.label === "report");

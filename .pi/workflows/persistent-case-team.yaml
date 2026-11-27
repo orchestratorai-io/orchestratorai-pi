@@ -7,12 +7,11 @@ params:
   - { name: matter_name, default: "Untitled matter", description: "Matter name" }
   - { name: run_id, default: "", description: "OrchestratorAI run id (set by the app; leave empty from the TUI)" }
 doc: |-
-  Composition: inventory -> facts team (entities, timeline) and documents team (index) in parallel ->
-  record writer (rewrites the matter record file) -> attorney summary of what changed.
-  Adapted from orchestratorai-local `legal/workflows/persistent-case-team`. Local keeps matter-scoped
-  state in Postgres; on Pi the durable state is the matter record Markdown file, which every run reads
-  and rewrites - so running it again on a new batch grows the same record. The record writer is the only
-  agent in the catalogue with write access, and it may write only the matter record path.
+  Composition: inventory -> separate entity, timeline, and document-index extracts, one at a time ->
+  record writer -> source validator -> attorney summary of what changed.
+  Adapted from orchestratorai-local `legal/workflows/persistent-case-team`. On Pi the durable state is
+  the matter-record Markdown file, so running another batch updates the same record. The writer and
+  validator may modify only the matter-record path.
 
   ```orchestrator-launch
   title: Matters
@@ -46,8 +45,8 @@ flow:
         Inventory every readable document in the folder {params.target}.
         Use ls and find to enumerate it, then read enough of each file to classify it.
         Each `path` must be the exact path a read tool can open (include the folder prefix).
-        Exclude README/index files, hidden files, binaries, and {params.matter_record}. Keep each
-        summary under 80 words and do not add analysis or facts absent from that document.
+        Exclude README/index files, hidden files, binaries, and {params.matter_record}. Summarize each
+        document’s role in one sentence of at most 280 characters, grounded in that document.
 
         Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
       json:
@@ -64,7 +63,7 @@ flow:
                 path: { type: string, minLength: 1 }
                 name: { type: string }
                 type: { type: string }
-                summary: { type: string }
+                summary: { type: string, maxLength: 280 }
               additionalProperties: false
           note: { type: string }
         additionalProperties: false
@@ -72,7 +71,7 @@ flow:
 
     - kind: parallel
       label: matter-teams
-      onError: collect
+      concurrency: 1
       branches:
         entities:
           kind: agent
@@ -80,12 +79,14 @@ flow:
           label: entity-extractor
           task: |-
             Update the entity list for matter "{params.matter_name}".
-            Existing matter record to read first (it may not exist yet - if the read fails, start fresh):
-            {params.matter_record}
+            Previous record: {params.matter_record}
+            If that exact path is missing, start fresh. Read only that path and the incoming paths
+            below. Treat sibling records as unrelated.
             New documents in this batch (read each):
             {inventory.documents}
 
-            CLOSED RECORD: stay under 2,000 words. Cite exact paths for every entity. Preserve a legacy
+            CLOSED RECORD: submit only compact entity rows, one per named entity, with exact citations.
+            Use the existing record’s entity section when available. Preserve a legacy
             detail only with its cited source; mark unsupported legacy detail `[VERIFY LEGACY]`. Do not
             infer aliases, roles, relationships, dates, amounts, or legal conclusions.
             Entities are ONLY named people and organizations with a matter role; never list dates,
@@ -99,14 +100,16 @@ flow:
           label: timeline-extractor
           task: |-
             Update the timeline for matter "{params.matter_name}".
-            Existing matter record to read first (it may not exist yet - if the read fails, start fresh):
-            {params.matter_record}
+            Previous record: {params.matter_record}
+            If that exact path is missing, start fresh. Read only that path and the incoming paths
+            below. Treat sibling records as unrelated.
             New documents in this batch (read each):
             {inventory.documents}
 
-            CLOSED RECORD: stay under 2,500 words. Use only exact stated dates; put undated events under
-            `Undated`. Cite exact paths. Preserve legacy rows only with their cited source and mark
-            unsupported detail `[VERIFY LEGACY]`. Prefix significance with `Assessment:`.
+            CLOSED RECORD: submit only compact timeline rows, one per dated event, with exact citations.
+            Use the existing record’s timeline section when available. Use only exact stated dates and
+            omit undated material. Preserve legacy rows with their cited source and mark unsupported
+            detail `[VERIFY LEGACY]`. Prefix significance with `Assessment:`.
 
             Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
         documents:
@@ -115,14 +118,17 @@ flow:
           label: document-indexer
           task: |-
             Update the document index for matter "{params.matter_name}".
-            Existing matter record to read first (it may not exist yet - if the read fails, start fresh):
-            {params.matter_record}
+            Previous record: {params.matter_record}
+            If that exact path is missing, start fresh. Read only that path and the incoming paths
+            below. Treat sibling records as unrelated.
             New documents in this batch (read each):
             {inventory.documents}
 
-            CLOSED RECORD: stay under 2,500 words. Index only exact incoming paths and copy source dates,
-            parties, amounts, triggers, and conditions exactly. Use `not stated` rather than infer. Mark
-            unsupported legacy detail `[VERIFY LEGACY]`.
+            CLOSED RECORD: submit compact document rows and a separate short list of unresolved
+            prior open questions, if any, with their original citations. Use the existing record’s
+            index and open-questions sections when available. Keep genuinely inherited rows with their cited paths. For incoming documents,
+            index each exact path once and copy dates, parties, amounts, triggers, and conditions exactly.
+            Use `not stated` rather than infer. Mark unsupported legacy detail `[VERIFY LEGACY]`.
 
             Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
       as: extracted
@@ -160,11 +166,12 @@ flow:
         containing `Updated: generated locally · Documents indexed: <integer>`.
         Never paste extracts or add overview/category/detail headings.
         Never calculate interest, totals, percentages, dates, or consequences. Keep share classes,
-        contract clauses, caps, and remedies separate. After writing, read the file back and correct
-        any schema violation, derived number, or unsupported row before submitting.
+        contract clauses, caps, and remedies separate. Check the schema and source values before the
+        single write. Confirm the write succeeded. The next step performs the independent source check.
         Timeline includes ONLY events with an exact date explicitly printed in a source, sorted in strict
         ascending order. Omit undated facts from the timeline. Every open-question bullet ends with an
-        exact source path; use `[VERIFY LEGACY]` only for an actual prior-record detail.
+        exact source path. Keep inherited open questions from the document extract unless the new
+        sources resolve them. Use `[VERIFY LEGACY]` only for an actual prior-record detail.
         Because this record path may be new: if no prior record was read, emit no `[VERIFY LEGACY]` tags.
         Entity Type must be exactly `Person` or `Organization`; First seen must be an exact source path.
         Preserve every stated quantity exactly. Keep a document's issue date separate from dates of
@@ -186,15 +193,18 @@ flow:
         Read every incoming source listed here before validating factual exactness:
         {inventory.documents}
 
-        The record must have the exact five-section schema, stay under 1,800 words, cite exact incoming
-        paths, preserve exact quantities and dates, and contain no invented calculations or metadata date.
+        The record must have the exact five-section schema, stay under 1,800 words, cite exact paths for
+        incoming findings, preserve exact quantities and dates, and contain no invented calculations or
+        metadata date. Do not delete a cited legacy row because its source is outside this batch.
         Timeline rows must be strictly chronological by explicit source date; preserve range endpoints
         exactly and reject inverted ranges. Keep a document's issue date separate from dates of events
         described inside it. Remove `[VERIFY LEGACY]` from any question directly supported
         by an incoming cited source. Metadata must say `Updated: generated locally`; `Documents indexed`
         must equal the number of distinct document-index rows in the completed record.
 
-        Read the repaired file back, then submit only a concise validation checklist.
+        Check customer/provider roles, factual amounts, and actual trigger status before chronology.
+        If repair is needed, prepare the complete corrected record and use one write. Read it back
+        once. Report any remaining discrepancies for counsel in the validation checklist.
 
         Final action: call the pi_agents_submit_result tool with your complete deliverable as `result`. Do not write the deliverable as a message.
       as: validation
@@ -232,6 +242,8 @@ flow:
         `Recommendation:`. Use `not stated` for silence.
         Keep share classes, clauses, caps, and remedies separate; never transfer rights between them,
         call a service-credit cap a liability cap, or convert a possible remedy/default into certainty.
+        Apply source corrections from validation to the update summary. Keep measured observations,
+        thresholds, and conditional remedies separate. Leave uncertain legal effects for counsel.
         Missing employee/contractor IP assignments, wage claims, and an open government audit are HIGH,
         never MEDIUM or LOW. Every entity and timeline bullet needs its own exact incoming path; do not
         use collective attribution or claim a source document is unavailable when it is in the batch.

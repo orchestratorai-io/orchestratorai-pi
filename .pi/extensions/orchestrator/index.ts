@@ -41,6 +41,9 @@ import { ExtensionRuntime } from "./runtime.ts";
 import { DecisionClient, runRubric, type Rubric } from "./decisions/index.ts";
 import { guardBlock, validateSpec, runGuards, type GuardContext, type GuardSpec } from "./guards.ts";
 import { attorneyGate, consoleAttached, gateRun, sleep, SKIPPED } from "./gate.ts";
+import { ollamaThinkingPayload } from "./ollama-thinking.ts";
+import { registerRequiredSource } from "./require-source.ts";
+import { registerDiligenceEvidence } from "./diligence-evidence.ts";
 
 const CALLER = "orchestratorai";
 const REPLY_TYPE = "orchestrator:reply";
@@ -116,6 +119,13 @@ export default function orchestrator(pi: any) {
   const journal = new Journal(() => runtime?.store, agents);
   runtime = new ExtensionRuntime(journal);
   const rt = runtime;
+
+  pi.on("before_provider_request", ({ payload }: { payload: unknown }, ctx: any) =>
+    ollamaThinkingPayload(payload, ctx.model, pi.getThinkingLevel()));
+  if (process.env.PI_AGENTS_DEPTH) {
+    registerRequiredSource(pi);
+    registerDiligenceEvidence(pi);
+  }
 
   function openStore(cwd: string): RunStore {
     return rt.ensureStore(findProjectDir(cwd));

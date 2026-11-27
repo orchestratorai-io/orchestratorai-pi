@@ -7,7 +7,7 @@ params:
   - { name: context, default: "Identify risks, deal-breakers, and missing materials for buyer-side counsel.", description: Objective }
   - { name: run_id, default: "", description: "OrchestratorAI run id (set by the app; leave empty from the TUI)" }
 doc: |-
-  Composition: inventory -> map(documents, 2 at a time) analyst -> **gate 1** (per-document findings) ->
+  Composition: inventory -> map(documents, one at a time) analyst -> **gate 1** (per-document findings) ->
   synthesis -> **gate 2** (risk matrix) -> report.
   Ported from orchestratorai-local `legal/workflows/due-diligence`, which has the same two attorney gates.
 
@@ -69,19 +69,26 @@ flow:
     - kind: map
       label: analyse
       over: "{inventory.documents}"
-      concurrency: 2
+      concurrency: 1
       body:
         kind: agent
         profile: dd-document-analyst
         label: analyst
         task: |-
+          Required source: {item.path}
+          Diligence evidence: {item.path}
           Analyse deal-room document {index}: {item.name} (type: {item.type})
-          Path to read: {item.path}
+          Use the primary source provided by Pi. If it was not supplied inline, call the read tool
+          on {item.path} before classifying or writing any finding. If unreadable, submit an error.
           Transaction: {params.transaction}
           Objective: {params.context}
 
-          Head your output `## {item.name}`.
-          CLOSED RECORD: stay under 600 words and use only this document. Do not add outside law, regulatory
+          Head your output `## {item.name}` with the exact path. Write a compact list of material
+          source-backed findings. Combine related terms, risks, conditions, and consequences on the
+          same line so the next stage receives each fact once.
+          Start with the instrument title and exact named parties and roles, including which party
+          owns each consent right or remedy.
+          CLOSED RECORD: aim for 350 words and use only this document. Do not add outside law, regulatory
           history/dates, fine caps, market practice, assumed documents, or arithmetic not printed in the source.
           For Privacy Shield say only `the DPA relies on Privacy Shield; no SCCs are attached; [VERIFY] legal effect`.
           Never mention invalidity, CJEU, Schrems, 2020, elapsed non-compliance, or fine amounts. List a missing
@@ -119,6 +126,7 @@ flow:
       profile: dd-synthesizer
       label: synthesis
       task: |-
+        Diligence evidence: {params.target}
         Synthesize the deal room at {params.target}.
         Transaction: {params.transaction}
         Objective: {params.context}
@@ -126,9 +134,14 @@ flow:
         ATTORNEY DIRECTION FROM GATE 1 (apply any correction it gives):
         {gate1}
 
+        DOCUMENT INVENTORY:
+        {inventory.documents}
+
         PER-DOCUMENT FINDINGS:
         {findings}
-        Keep the synthesis under 2,000 words. Preserve exact source facts and conditional language; prefix
+        Keep the synthesis under 1,500 words. Give each risk one canonical row with the exact source
+        and conditional consequence. Reference risk IDs from the other sections instead of repeating
+        the evidence or recommendations. Preserve exact source facts and conditional language; prefix
         every inference with `Assessment:` and every proposed action with `Recommendation:`.
         This is a closed-record synthesis: do not add outside law, regulatory history, fine caps, legal-validity
         conclusions, or market practice. Use `[VERIFY]` when the supplied findings do not establish a conclusion.
@@ -162,6 +175,7 @@ flow:
       profile: dd-report-writer
       label: report
       task: |-
+        Diligence evidence: {params.target}
         Write the final diligence report for the deal room at {params.target}.
         Transaction: {params.transaction}
         Objective: {params.context}
@@ -175,7 +189,7 @@ flow:
         CRITICAL and HIGH risks to HIGH. Prefer 5-10 items; lead with deal-breakers.
         If either gate requested changes, address the COMMENT explicitly in the affected sections.
         Every checklist line MUST begin exactly with `- [ ] HIGH —`, `- [ ] MEDIUM —`, or `- [ ] LOW —`.
-        A skipped gate records no correction. Keep the report under 2,500 words, preserve exact conditional
+        A skipped gate records no correction. Keep the report under 1,600 words, preserve exact conditional
         language, and label every inference `Assessment:` and proposed action `Recommendation:`.
         Do not add outside law, regulatory history, fine caps, legal-validity conclusions, or market practice;
         keep unsupported legal conclusions marked `[VERIFY]`.
@@ -188,9 +202,22 @@ flow:
         IP title, regulatory, financing, consent, and price/escrow items must be HIGH or MEDIUM, never LOW. LOW is
         only for administrative/cosmetic follow-up that cannot materially affect closing, price, liability, or ownership.
         Undisclosed or unapproved sub-processors must be HIGH or MEDIUM, never LOW.
+        Material contractual security, breach-notification, and data-retention risks are at least MEDIUM.
+        Preserve every material risk from the matrix. Use risk IDs to point back to the matrix
+        from the deal-breaker and cross-document sections, without repeating full findings.
+        Copy only expressly stated numerical figures. Omit calculated percentages, totals, or
+        ownership majority inferences even if the matrix includes them. State thresholds and
+        observations separately and preserve optional remedies with their exact conditions.
+        Mark a proposed buyer closing condition `Recommendation:` rather than treating it as binding.
+        Keep the lender, customer, and equity-holder roles separate. Use the party roster when
+        checking who has each consent right or remedy. If the roster and matrix conflict,
+        give the exact source path and mark the attribution `[VERIFY]`.
 
         GATE 1 DECISION: {gate1}
         GATE 2 DECISION: {gate2}
+
+        DOCUMENT INVENTORY:
+        {inventory.documents}
 
         RISK MATRIX AND CROSS-DOCUMENT FINDINGS:
         {matrix}

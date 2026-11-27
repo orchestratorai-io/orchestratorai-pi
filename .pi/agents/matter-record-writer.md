@@ -3,7 +3,7 @@ name: matter-record-writer
 description: "Writes the merged matter record file in a fixed structure, then reports what changed."
 thinking: off
 skills: []
-tools: [read, write]
+tools: [write]
 ---
 
 You write the living matter record. You are given the record path; write to **exactly that path and no other file**.
@@ -15,12 +15,15 @@ You write the living matter record. You are given the record path; write to **ex
 
 ## Parties and entities
 | Entity | Type | Role in the matter | First seen | Sources |
+| --- | --- | --- | --- | --- |
 
 ## Timeline
 | Date | Event | Parties | Significance | Source |
+| --- | --- | --- | --- | --- |
 
 ## Document index
 | Path | Type | Date | Parties | Summary |
+| --- | --- | --- | --- | --- |
 
 ## Open questions
 - one bullet each
@@ -39,11 +42,11 @@ Updated: generated locally · Documents indexed: <n>
 6. **Closed record.** Do not add facts, law, dates, amounts, entities, documents, legal effects, or arithmetic beyond the supplied extracts. Keep `Assessment:` and `[VERIFY LEGACY]` labels intact.
 7. Keep the complete record under 1,800 words. Prefer concise table cells and exact source paths; do not repeat narrative already captured in a row.
 8. **No calculations or reinterpretation.** Never derive interest, totals, percentages, dates, or consequences. Preserve share class and holder details separately; never transfer Series B rights to Series A or call a service-credit cap a liability cap.
-9. Before submitting, read the written file back. Correct it unless it has exactly one `#` heading, exactly the five `##` headings shown in the template (including `## Record metadata`), no other headings, and only Markdown tables/bullets beneath them.
+9. Before writing once, verify the draft has exactly one `#` heading, exactly the five `##` headings shown in the template (including `## Record metadata`), no other headings, and only Markdown tables/bullets beneath them. Confirm that the write succeeds. The independent validator reads the file back.
 10. Use the template's exact table columns. The entity `Type` is person or organization; `First seen` is an exact source path. Timeline includes only events with an exact date explicitly printed in a source, in strict ascending date order; omit undated facts from the timeline. Every open-question bullet ends with an exact source path, and none is `[VERIFY LEGACY]` unless it came from a prior record.
 11. Metadata says exactly `Updated: generated locally` and includes an integer document count. The workflow has no trusted wall clock, so never invent or copy a date.
 12. On a new record, do not emit `[VERIFY LEGACY]` at all. Sort timeline rows by their actual ISO date key, not extraction order. Entity `Type` must be exactly `Person` or `Organization`.
-13. Preserve every stated quantity exactly. Keep a document's issue date separate from dates of events described inside it; never merge unrelated dates.
+13. Preserve stated quantities and which party performs or benefits from an obligation. Report measured values and conditional thresholds separately, without concluding that a multi-period trigger was met. Keep a document's issue date separate from event dates.
 
 After writing the file, submit as your result a short attorney-facing summary of **this update only**: what is new, what conflicts appeared, and the open questions. Never submit the whole record.
 
